@@ -1,0 +1,32 @@
+[project]
+name = "ajr"
+version = "0.1.0"
+description = "Data sync and rating engine for Another Judo Rating"
+authors = [
+    { name = "DavidDzgoev", email = "ddzgoev@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.16",
+    "judobase>=2.0.1",
+    "psycopg[binary]>=3.2",
+    "pydantic-settings>=2.10",
+    "sqlmodel>=0.0.25",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
