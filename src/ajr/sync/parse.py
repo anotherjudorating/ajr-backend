@@ -1,130 +1,86 @@
-"""Convert judobase objects into rows for our tables.
+"""Convert judobase objects into our models.
 
-judobase returns most values as strings ("1", "0", "2025/06/13") and uses "0" or ""
-when something is unknown, so all cleanup happens here.
+judobase already returns typed values (ints, dates, None for unknown), so here we
+only map its fields to our columns.
 """
 
-from datetime import UTC, date, datetime
+import judobase
 
-from judobase.schemas import Competition, Contest, CountryShort, Judoka
-
-
-def parse_int(value) -> int | None:
-    if value is None or value == "":
-        return None
-    return int(value)
+from ajr.core.models import Athlete, Competition, Contest, Country
 
 
-def parse_id(value) -> int | None:
-    """judobase uses 0 for "no id" (e.g. no winner yet)."""
-    number = parse_int(value)
-    if number == 0:
-        return None
-    return number
-
-
-def parse_bool(value) -> bool | None:
-    if value is None or value == "":
-        return None
-    return str(value) not in ("0", "false", "False")
-
-
-def parse_text(value, max_length: int) -> str | None:
+def text(value: str | None) -> str | None:
+    """Trimmed text; an empty text becomes None."""
     if value is None:
         return None
-    text = str(value).strip()
-    if not text:
-        return None
-    return text[:max_length]
+    return value.strip() or None
 
 
-def parse_date(value) -> date | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    # "2025/06/13" or "2025-06-13"
-    return date.fromisoformat(str(value)[:10].replace("/", "-"))
+def country(item: judobase.CountryShort) -> Country:
+    return Country(id=item.id_country, name=text(item.name), ioc=text(item.ioc))
 
 
-def parse_datetime(value) -> datetime | None:
-    """judobase sends 0 for an unknown time, which pydantic turns into 1970-01-01."""
-    if not isinstance(value, datetime):
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    if value.year <= 1970:
-        return None
-    return value
+def competition(item: judobase.Competition) -> Competition:
+    return Competition(
+        id=item.id_competition,
+        name=text(item.name),
+        date_from=item.date_from,
+        date_to=item.date_to,
+        rank_name=text(item.rank_name),
+        competition_code=text(item.competition_code),
+        city=text(item.city),
+        timezone=text(item.timezone),
+        is_teams=item.is_teams,
+        # judobase gives the number of results; we only need to know if there are any.
+        has_results=bool(item.has_results),
+        country_id=item.id_country,
+        updated_at=item.updated_at_ts,
+    )
 
 
-def country_row(country: CountryShort) -> dict:
-    return {
-        "id": int(country.id_country),
-        "name": parse_text(country.name, 255),
-        "ioc": parse_text(country.ioc, 10),
-    }
+def contest(item: judobase.Contest) -> Contest:
+    return Contest(
+        id=item.id_fight,
+        competition_id=item.id_competition,
+        blue_id=item.id_person_blue,
+        white_id=item.id_person_white,
+        winner_id=item.id_winner,
+        is_finished=item.is_finished,
+        contest_code=text(item.contest_code_long),
+        age=text(item.age),
+        weight=text(item.weight),
+        id_weight=item.id_weight,
+        round=item.round,
+        round_code=text(item.round_code),
+        round_name=text(item.round_name),
+        fight_no=item.fight_no,
+        started_at=item.date_start_ts,
+        duration=text(item.duration),
+        golden_score=item.gs,
+        bye=item.bye,
+        ippon_w=item.ippon_w,
+        waza_w=item.waza_w,
+        yuko_w=item.yuko_w,
+        penalty_w=item.penalty_w,
+        hsk_w=item.hsk_w,
+        ippon_b=item.ippon_b,
+        waza_b=item.waza_b,
+        yuko_b=item.yuko_b,
+        penalty_b=item.penalty_b,
+        hsk_b=item.hsk_b,
+    )
 
 
-def competition_row(competition: Competition) -> dict:
-    return {
-        "id": int(competition.id_competition),
-        "name": parse_text(competition.name, 255),
-        "date_from": parse_date(competition.date_from),
-        "date_to": parse_date(competition.date_to),
-        "rank_name": parse_text(competition.rank_name, 100),
-        "competition_code": parse_text(competition.competition_code, 100),
-        "city": parse_text(competition.city, 255),
-        "timezone": parse_text(competition.timezone, 50),
-        "is_teams": parse_bool(competition.is_teams),
-        "has_results": parse_bool(competition.has_results),
-        "country_id": parse_id(competition.id_country),
-        "updated_at": parse_datetime(competition.updated_at_ts),
-    }
-
-
-def contest_row(contest: Contest) -> dict:
-    return {
-        "id": int(contest.id_fight),
-        "competition_id": int(contest.id_competition),
-        "blue_id": parse_id(contest.id_person_blue),
-        "white_id": parse_id(contest.id_person_white),
-        "winner_id": parse_id(contest.id_winner),
-        "is_finished": bool(parse_bool(contest.is_finished)),
-        "contest_code": parse_text(contest.contest_code_long, 100),
-        "age": parse_text(contest.age, 50),
-        "weight": parse_text(contest.weight, 50),
-        "id_weight": parse_id(contest.id_weight),
-        "round": parse_int(contest.round),
-        "round_code": parse_text(contest.round_code, 50),
-        "round_name": parse_text(contest.round_name, 100),
-        "fight_no": parse_int(contest.fight_no),
-        "started_at": parse_datetime(contest.date_start_ts),
-        "duration": parse_text(contest.duration, 20),
-        "golden_score": parse_bool(contest.gs),
-        "bye": parse_bool(contest.bye),
-        "ippon_w": parse_int(contest.ippon_w),
-        "waza_w": parse_int(contest.waza_w),
-        "yuko_w": parse_int(contest.yuko_w),
-        "penalty_w": parse_int(contest.penalty_w),
-        "hsk_w": parse_int(contest.hsk_w),
-        "ippon_b": parse_int(contest.ippon_b),
-        "waza_b": parse_int(contest.waza_b),
-        "yuko_b": parse_int(contest.yuko_b),
-        "penalty_b": parse_int(contest.penalty_b),
-        "hsk_b": parse_int(contest.hsk_b),
-    }
-
-
-def judoka_row(judoka: Judoka, judoka_id: int) -> dict:
-    return {
-        "id": judoka_id,
-        "family_name": parse_text(judoka.family_name, 255),
-        "given_name": parse_text(judoka.given_name, 255),
-        "gender": parse_text(judoka.gender, 10),
-        "dob_year": parse_id(judoka.dob_year),
-        "country_id": parse_id(judoka.id_country),
-    }
+def athlete(item: judobase.Judoka, athlete_id: int) -> Athlete:
+    """The profile has no id of its own: it is the one we asked for."""
+    return Athlete(
+        id=athlete_id,
+        family_name=text(item.family_name),
+        given_name=text(item.given_name),
+        gender=text(item.gender),
+        dob_year=item.dob_year,
+        country_id=item.id_country,
+    )
 
 
 def gender_from_contest_code(code: str | None) -> str | None:
@@ -135,30 +91,26 @@ def gender_from_contest_code(code: str | None) -> str | None:
     return {"m": "male", "f": "female"}.get(parts[3])
 
 
-def blue_judoka_row(contest: Contest) -> dict | None:
-    """Judoka row from the names inside a contest, used when the profile can't be fetched."""
-    judoka_id = parse_id(contest.id_person_blue)
-    if judoka_id is None:
+def blue_athlete(item: judobase.Contest) -> Athlete | None:
+    """Athlete from the names inside a contest, used when the profile can't be fetched."""
+    if item.id_person_blue is None:
         return None
-    return {
-        "id": judoka_id,
-        "family_name": parse_text(contest.family_name_blue, 255),
-        "given_name": parse_text(contest.given_name_blue, 255),
-        "gender": gender_from_contest_code(contest.contest_code_long),
-        "dob_year": None,
-        "country_id": parse_id(contest.id_country_blue),
-    }
+    return Athlete(
+        id=item.id_person_blue,
+        family_name=text(item.family_name_blue),
+        given_name=text(item.given_name_blue),
+        gender=gender_from_contest_code(item.contest_code_long),
+        country_id=item.id_country_blue,
+    )
 
 
-def white_judoka_row(contest: Contest) -> dict | None:
-    judoka_id = parse_id(contest.id_person_white)
-    if judoka_id is None:
+def white_athlete(item: judobase.Contest) -> Athlete | None:
+    if item.id_person_white is None:
         return None
-    return {
-        "id": judoka_id,
-        "family_name": parse_text(contest.family_name_white, 255),
-        "given_name": parse_text(contest.given_name_white, 255),
-        "gender": gender_from_contest_code(contest.contest_code_long),
-        "dob_year": None,
-        "country_id": parse_id(contest.id_country_white),
-    }
+    return Athlete(
+        id=item.id_person_white,
+        family_name=text(item.family_name_white),
+        given_name=text(item.given_name_white),
+        gender=gender_from_contest_code(item.contest_code_long),
+        country_id=item.id_country_white,
+    )

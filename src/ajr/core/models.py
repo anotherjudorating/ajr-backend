@@ -1,6 +1,6 @@
 """Database tables, all in the `ajr` schema (not exposed by the Supabase Data API).
 
-Ids of countries, judokas, competitions and contests are judobase ids.
+Ids of countries, athletes, competitions and contests are judobase ids.
 """
 
 from datetime import date, datetime
@@ -21,17 +21,17 @@ class Country(SQLModel, table=True):
     __table_args__ = {"schema": SCHEMA}
 
     id: int = Field(**EXTERNAL_ID)
-    name: str | None = Field(default=None, max_length=255)
-    ioc: str | None = Field(default=None, max_length=10)
+    name: str | None = None
+    ioc: str | None = None
 
 
-class Judoka(SQLModel, table=True):
+class Athlete(SQLModel, table=True):
     __table_args__ = {"schema": SCHEMA}
 
     id: int = Field(**EXTERNAL_ID)
-    family_name: str | None = Field(default=None, max_length=255)
-    given_name: str | None = Field(default=None, max_length=255)
-    gender: str | None = Field(default=None, max_length=10)
+    family_name: str | None = None
+    given_name: str | None = None
+    gender: str | None = None
     dob_year: int | None = None  # judobase only exposes the year of birth
     country_id: int | None = Field(default=None, foreign_key=fk("country"), index=True)
 
@@ -41,7 +41,7 @@ class OlympicCycle(SQLModel, table=True):
     __table_args__ = {"schema": SCHEMA}
 
     id: int = Field(**EXTERNAL_ID)
-    name: str = Field(max_length=255)
+    name: str
     date_from: date
     date_to: date
 
@@ -50,13 +50,13 @@ class Competition(SQLModel, table=True):
     __table_args__ = {"schema": SCHEMA}
 
     id: int = Field(**EXTERNAL_ID)
-    name: str | None = Field(default=None, max_length=255)
+    name: str | None = None
     date_from: date | None = Field(default=None, index=True)
     date_to: date | None = None
-    rank_name: str | None = Field(default=None, max_length=100)
-    competition_code: str | None = Field(default=None, max_length=100)
-    city: str | None = Field(default=None, max_length=255)
-    timezone: str | None = Field(default=None, max_length=50)
+    rank_name: str | None = None
+    competition_code: str | None = None
+    city: str | None = None
+    timezone: str | None = None
     is_teams: bool | None = None
     has_results: bool | None = None
     country_id: int | None = Field(default=None, foreign_key=fk("country"))
@@ -74,20 +74,20 @@ class Contest(SQLModel, table=True):
 
     id: int = Field(**EXTERNAL_ID)  # judobase id_fight
     competition_id: int = Field(foreign_key=fk("competition"), index=True)
-    blue_id: int | None = Field(default=None, foreign_key=fk("judoka"), index=True)
-    white_id: int | None = Field(default=None, foreign_key=fk("judoka"), index=True)
-    winner_id: int | None = Field(default=None, foreign_key=fk("judoka"))
+    blue_id: int | None = Field(default=None, foreign_key=fk("athlete"), index=True)
+    white_id: int | None = Field(default=None, foreign_key=fk("athlete"), index=True)
+    winner_id: int | None = Field(default=None, foreign_key=fk("athlete"))
     is_finished: bool = False
-    contest_code: str | None = Field(default=None, max_length=100)
-    age: str | None = Field(default=None, max_length=50)
-    weight: str | None = Field(default=None, max_length=50)
+    contest_code: str | None = None
+    age: str | None = None
+    weight: str | None = None
     id_weight: int | None = None  # judobase weight category id
     round: int | None = None
-    round_code: str | None = Field(default=None, max_length=50)  # position in the bracket
-    round_name: str | None = Field(default=None, max_length=100)
+    round_code: str | None = None  # position in the bracket
+    round_name: str | None = None
     fight_no: int | None = None
     started_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
-    duration: str | None = Field(default=None, max_length=20)
+    duration: str | None = None
     golden_score: bool | None = None
     bye: bool | None = None  # walked through without an opponent: not a real fight
     # Scores: _w white, _b blue.
@@ -103,9 +103,18 @@ class Contest(SQLModel, table=True):
     hsk_b: int | None = None
 
 
-class SyncState(SQLModel, table=True):
-    __tablename__ = "sync_state"
+class JobRun(SQLModel, table=True):
+    """One run of a job step: what ran, when, and how it ended.
+
+    A run left `running` long after it started was killed (e.g. by a timeout).
+    """
+
+    __tablename__ = "job_run"
     __table_args__ = {"schema": SCHEMA}
 
-    id: int = Field(default=1, primary_key=True)
-    last_success_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    id: int | None = Field(default=None, primary_key=True)
+    type: str  # sync, sync_full, rating
+    status: str  # running, success, failed
+    started_at: datetime = Field(sa_type=DateTime(timezone=True))
+    finished_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    error: str | None = None  # traceback of a failed run

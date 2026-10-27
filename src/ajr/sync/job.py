@@ -6,7 +6,7 @@ Order of work:
    - competitions happening now or in the next two weeks (draws and live results),
    - past competitions whose data changed in judobase since we last saved them,
    - every past competition with results when running with --full.
-3. For each of those competitions, in one transaction: new judokas, the contests,
+3. For each of those competitions, in one transaction: new athletes, the contests,
    and removal of contests judobase no longer lists.
 
 Every write is an upsert keyed by the judobase id, so running the sync twice gives
@@ -16,15 +16,17 @@ the same result, and a crashed run simply continues where it stopped.
 import asyncio
 import json
 import logging
-from datetime import UTC, date, datetime, timedelta
+from collections.abc import Collection
+from datetime import date, timedelta
 from pathlib import Path
 
+import judobase
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel
 
 from ajr.core.db import engine
-from ajr.core.models import Competition, Contest, Country, Judoka, OlympicCycle, SyncState
+from ajr.core.models import Athlete, Competition, Contest, OlympicCycle
 from ajr.sync import parse
 from ajr.sync.client import JudobaseClient
 
@@ -39,24 +41,24 @@ ROWS_PER_INSERT = 1000
 
 async def run_sync(full: bool = False) -> None:
     today = date.today()
-    async with JudobaseClient() as judobase:
+    async with JudobaseClient() as client:
         with Session(engine) as session:
             save_olympic_cycles(session)
-            country_ids = save_countries(session, await judobase.countries())
-            save_competitions(session, await judobase.competitions(), country_ids)
+            country_ids = save_countries(session, await client.countries())
+            save_competitions(session, await client.competitions(), country_ids)
             session.commit()
             competitions = pick_competitions_to_sync(session, today, full)
-            known_judokas = set(session.scalars(select(Judoka.id)))
+            known_athletes = set(session.scalars(select(Athlete.id)))
 
         logger.info("Syncing contests of %d competitions", len(competitions))
         for start in range(0, len(competitions), COMPETITIONS_PER_BATCH):
             batch = competitions[start : start + COMPETITIONS_PER_BATCH]
-            results = await asyncio.gather(*(fetch_contests(judobase, c) for c in batch))
+            results = await asyncio.gather(*(fetch_contests(client, c) for c in batch))
             for competition, contests in zip(batch, results, strict=True):
                 if contests is None:
                     continue
                 await save_competition_contests(
-                    judobase, competition, contests, known_judokas, country_ids
+                    client, competition, contests, known_athletes, country_ids
                 )
             logger.info(
                 "Done %d/%d",
@@ -64,20 +66,17 @@ async def run_sync(full: bool = False) -> None:
                 len(competitions),
             )
 
-    with Session(engine) as session:
-        upsert(session, SyncState, [{"id": 1, "last_success_at": datetime.now(UTC)}])
-        session.commit()
     logger.info("Sync finished")
 
 
 # --- reference data ----------------------------------------------------------
 
 
-def olympic_cycle_rows() -> list[dict]:
+def olympic_cycles() -> list[OlympicCycle]:
     """A cycle runs from the day after one Games to the last day of the next ones."""
     games = json.loads(OLYMPIC_GAMES_FILE.read_text())
     games.sort(key=lambda g: g["end"])
-    rows = []
+    cycles = []
     previous_end = None
     for number, game in enumerate(games, start=1):
         end = date.fromisoformat(game["end"])
@@ -85,47 +84,49 @@ def olympic_cycle_rows() -> list[dict]:
             start = date.fromisoformat(game["start"])
         else:
             start = previous_end + timedelta(days=1)
-        rows.append(
-            {
-                "id": number,
-                "name": f"{game['city']} {game['year']}",
-                "date_from": start,
-                "date_to": end,
-            }
+        cycles.append(
+            OlympicCycle(
+                id=number,
+                name=f"{game['city']} {game['year']}",
+                date_from=start,
+                date_to=end,
+            )
         )
         previous_end = end
-    return rows
+    return cycles
 
 
 def save_olympic_cycles(session: Session) -> None:
-    upsert(session, OlympicCycle, olympic_cycle_rows())
+    upsert(session, olympic_cycles())
 
 
-def save_countries(session: Session, countries) -> set[int]:
-    rows = [parse.country_row(c) for c in countries]
-    upsert(session, Country, rows)
-    return {row["id"] for row in rows}
+def save_countries(session: Session, items: list[judobase.CountryShort]) -> set[int]:
+    countries = [parse.country(item) for item in items]
+    upsert(session, countries)
+    return {country.id for country in countries}
 
 
-def save_competitions(session: Session, competitions, country_ids: set[int]) -> None:
-    cycles = olympic_cycle_rows()
-    rows = []
-    for competition in competitions:
-        row = parse.competition_row(competition)
-        row["olympic_cycle_id"] = find_cycle(cycles, row["date_from"])
-        if row["country_id"] not in country_ids:
-            row["country_id"] = None
-        rows.append(row)
+def save_competitions(
+    session: Session, items: list[judobase.Competition], country_ids: set[int]
+) -> None:
+    cycles = olympic_cycles()
+    competitions = []
+    for item in items:
+        competition = parse.competition(item)
+        competition.olympic_cycle_id = find_cycle(cycles, competition.date_from)
+        if competition.country_id not in country_ids:
+            competition.country_id = None
+        competitions.append(competition)
     # `contests_synced_for` is ours: never overwritten by judobase data.
-    upsert(session, Competition, rows, keep_columns={"contests_synced_for"})
+    upsert(session, competitions, keep_columns={"contests_synced_for"})
 
 
-def find_cycle(cycles: list[dict], day: date | None) -> int | None:
+def find_cycle(cycles: list[OlympicCycle], day: date | None) -> int | None:
     if day is None:
         return None
     for cycle in cycles:
-        if cycle["date_from"] <= day <= cycle["date_to"]:
-            return cycle["id"]
+        if cycle.date_from <= day <= cycle.date_to:
+            return cycle.id
     return None
 
 
@@ -166,9 +167,11 @@ def is_not_a_fight_event(competition: Competition) -> bool:
 # --- contests -----------------------------------------------------------------
 
 
-async def fetch_contests(judobase: JudobaseClient, competition: Competition):
+async def fetch_contests(
+    client: JudobaseClient, competition: Competition
+) -> list[judobase.Contest] | None:
     try:
-        return await judobase.contests(competition.id)
+        return await client.contests(competition.id)
     except Exception as error:
         # One broken competition must not stop the whole sync; it is retried next run.
         logger.error("Competition %s: could not fetch contests: %r", competition.id, error)
@@ -176,38 +179,38 @@ async def fetch_contests(judobase: JudobaseClient, competition: Competition):
 
 
 async def save_competition_contests(
-    judobase: JudobaseClient,
+    client: JudobaseClient,
     competition: Competition,
-    contests,
-    known_judokas: set[int],
+    items: list[judobase.Contest],
+    known_athletes: set[int],
     country_ids: set[int],
 ) -> None:
-    new_judokas = await fetch_new_judokas(judobase, contests, known_judokas)
-    for judoka in new_judokas:
-        if judoka["country_id"] not in country_ids:
-            judoka["country_id"] = None
+    new_athletes = await fetch_new_athletes(client, items, known_athletes)
+    for athlete in new_athletes:
+        if athlete.country_id not in country_ids:
+            athlete.country_id = None
 
-    contest_rows = []
-    for contest in contests:
-        row = parse.contest_row(contest)
-        if row["competition_id"] != competition.id:
+    contests = []
+    for item in items:
+        contest = parse.contest(item)
+        if contest.competition_id != competition.id:
             continue
-        if row["winner_id"] is not None and row["winner_id"] not in (
-            row["blue_id"],
-            row["white_id"],
+        if contest.winner_id is not None and contest.winner_id not in (
+            contest.blue_id,
+            contest.white_id,
         ):
             logger.warning(
                 "Contest %s: winner %s is not one of the fighters, ignoring the winner",
-                row["id"],
-                row["winner_id"],
+                contest.id,
+                contest.winner_id,
             )
-            row["winner_id"] = None
-        contest_rows.append(row)
+            contest.winner_id = None
+        contests.append(contest)
 
     with Session(engine) as session:
-        upsert(session, Judoka, new_judokas, update_existing=False)
-        upsert(session, Contest, contest_rows)
-        remove_missing_contests(session, competition.id, [row["id"] for row in contest_rows])
+        upsert(session, new_athletes, update_existing=False)
+        upsert(session, contests)
+        remove_missing_contests(session, competition.id, [contest.id for contest in contests])
         session.execute(
             update(Competition)
             .where(Competition.id == competition.id)
@@ -215,33 +218,33 @@ async def save_competition_contests(
         )
         session.commit()
 
-    known_judokas.update(judoka["id"] for judoka in new_judokas)
+    known_athletes.update(athlete.id for athlete in new_athletes)
     logger.info(
-        "Competition %s: %d contests, %d new judokas",
+        "Competition %s: %d contests, %d new athletes",
         competition.id,
-        len(contest_rows),
-        len(new_judokas),
+        len(contests),
+        len(new_athletes),
     )
 
 
-async def fetch_new_judokas(
-    judobase: JudobaseClient, contests, known_judokas: set[int]
-) -> list[dict]:
-    """Fetch profiles of judokas we have never seen. If a profile can't be fetched,
+async def fetch_new_athletes(
+    client: JudobaseClient, items: list[judobase.Contest], known_athletes: set[int]
+) -> list[Athlete]:
+    """Fetch profiles of athletes we have never seen. If a profile can't be fetched,
     use the name and country written in the contest instead."""
     from_contests = {}
-    for contest in contests:
-        for row in (parse.blue_judoka_row(contest), parse.white_judoka_row(contest)):
-            if row is not None and row["id"] not in known_judokas:
-                from_contests.setdefault(row["id"], row)
+    for item in items:
+        for athlete in (parse.blue_athlete(item), parse.white_athlete(item)):
+            if athlete is not None and athlete.id not in known_athletes:
+                from_contests.setdefault(athlete.id, athlete)
 
-    async def fetch_one(judoka_id: int) -> dict:
+    async def fetch_one(athlete_id: int) -> Athlete:
         try:
-            profile = await judobase.judoka(judoka_id)
-            return parse.judoka_row(profile, judoka_id)
+            profile = await client.judoka(athlete_id)
+            return parse.athlete(profile, athlete_id)
         except Exception as error:
-            logger.warning("Judoka %s: using contest data (%r)", judoka_id, error)
-            return from_contests[judoka_id]
+            logger.warning("Athlete %s: using contest data (%r)", athlete_id, error)
+            return from_contests[athlete_id]
 
     return list(await asyncio.gather(*(fetch_one(i) for i in from_contests)))
 
@@ -259,12 +262,19 @@ def remove_missing_contests(session: Session, competition_id: int, contest_ids: 
 
 
 def upsert(
-    session: Session, model, rows: list[dict], keep_columns=(), update_existing=True
+    session: Session,
+    items: list[SQLModel],
+    keep_columns: Collection[str] = (),
+    update_existing: bool = True,
 ) -> None:
-    """INSERT ... ON CONFLICT (primary key) DO UPDATE / DO NOTHING."""
-    if not rows:
+    """INSERT ... ON CONFLICT (primary key) DO UPDATE / DO NOTHING.
+
+    All items are of one model; `keep_columns` are never overwritten on update.
+    """
+    if not items:
         return
-    table = model.__table__
+    table = type(items[0]).__table__
+    rows = [item.model_dump() for item in items]
     primary_key = [column.name for column in table.primary_key]
     statement = insert(table)
     if update_existing:

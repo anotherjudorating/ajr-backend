@@ -55,9 +55,9 @@ class JudobaseClient:
     @retry_on_network_errors
     async def contests(self, competition_id: int) -> list[Contest]:
         async with self.limit:
-            return await self.api.find_contests(competition_id=str(competition_id))
+            return await self.api.find_contests(competition_id=competition_id)
 
     @retry_on_network_errors
     async def judoka(self, judoka_id: int) -> Judoka:
         async with self.limit:
-            return await self.api.get_judoka_info(str(judoka_id))
+            return await self.api.get_judoka_info(judoka_id)
