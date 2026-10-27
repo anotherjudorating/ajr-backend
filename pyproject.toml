@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.10",
     "sqlmodel>=0.0.25",
+    "tenacity>=9.0",
 ]
 
 [build-system]

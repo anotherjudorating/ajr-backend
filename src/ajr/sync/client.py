@@ -8,12 +8,26 @@ import asyncio
 import logging
 
 from aiohttp import ClientError
-from judobase import JudoBase
+from judobase import Competition, Contest, CountryShort, JudoBase, Judoka
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_REQUESTS = 8
-MAX_ATTEMPTS = 4
+
+retry_on_network_errors = retry(
+    retry=retry_if_exception_type((ConnectionError, ClientError, TimeoutError)),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(min=2, max=16),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 
 class JudobaseClient:
@@ -21,39 +35,29 @@ class JudobaseClient:
         self.api = JudoBase()
         self.limit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> JudobaseClient:
         await self.api.__aenter__()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc) -> None:
         await self.api.close_session()
 
-    async def request(self, description, make_request):
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                async with self.limit:
-                    return await make_request()
-            except (ConnectionError, ClientError, TimeoutError) as error:
-                if attempt == MAX_ATTEMPTS:
-                    raise
-                pause = 2**attempt
-                logger.warning("%s failed (%r), retrying in %s s", description, error, pause)
-                await asyncio.sleep(pause)
+    @retry_on_network_errors
+    async def countries(self) -> list[CountryShort]:
+        async with self.limit:
+            return await self.api.get_country_list()
 
-    async def countries(self):
-        return await self.request("countries", lambda: self.api.get_country_list())
+    @retry_on_network_errors
+    async def competitions(self) -> list[Competition]:
+        async with self.limit:
+            return await self.api.get_competition_list()
 
-    async def competitions(self):
-        return await self.request("competitions", lambda: self.api.get_competition_list())
+    @retry_on_network_errors
+    async def contests(self, competition_id: int) -> list[Contest]:
+        async with self.limit:
+            return await self.api.find_contests(competition_id=str(competition_id))
 
-    async def contests(self, competition_id: int):
-        return await self.request(
-            f"contests of competition {competition_id}",
-            lambda: self.api.find_contests(competition_id=str(competition_id)),
-        )
-
-    async def judoka(self, judoka_id: int):
-        return await self.request(
-            f"judoka {judoka_id}",
-            lambda: self.api.get_judoka_info(str(judoka_id)),
-        )
+    @retry_on_network_errors
+    async def judoka(self, judoka_id: int) -> Judoka:
+        async with self.limit:
+            return await self.api.get_judoka_info(str(judoka_id))
