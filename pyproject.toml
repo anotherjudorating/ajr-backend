@@ -30,6 +30,8 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["ajr"]
+# Research scripts that pick parameters on the real data: run by hand, not in production.
+omit = ["*/ajr/rating/tune.py", "*/ajr/rating/tune_ranking.py"]
 
 [tool.coverage.report]
 show_missing = true

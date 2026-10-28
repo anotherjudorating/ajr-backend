@@ -50,3 +50,14 @@ def test_rd_grows_with_time_up_to_the_limit():
     assert grow_rd(60, 0, growth=3.5, max_rd=350) == 60
     assert grow_rd(60, 365, growth=3.5, max_rd=350) == pytest.approx(89.8, abs=0.1)
     assert grow_rd(300, 10_000, growth=3.5, max_rd=350) == 350
+
+
+def test_big_upset_raises_volatility():
+    """A certain favourite losing to a much weaker opponent: the surprise is large."""
+    favourite = Rating(2400, 40, 0.06)
+    underdog = Rating(1200, 40, 0.06)
+
+    new = update(favourite, [(underdog, 0.0)], tau=0.5)
+
+    assert new.volatility > 0.06
+    assert new.rating < 2400
