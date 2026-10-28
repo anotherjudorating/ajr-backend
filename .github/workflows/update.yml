@@ -2,7 +2,8 @@ name: Update data
 
 # Every 15 minutes: new data from judobase, then the rating recomputed from the
 # first competition whose results changed (nothing changed: nothing to do).
-# Nightly the rating is recomputed from scratch as a safety net, then the records.
+# Nightly the rating is recomputed from scratch as a safety net, then the records
+# (by hand: the `records` option).
 # Each step logs itself in the job_run table; a failed step stops the rest.
 on:
   schedule:
@@ -12,6 +13,10 @@ on:
     inputs:
       full:
         description: Re-fetch contests of every competition and rate from scratch (~15 min)
+        type: boolean
+        default: false
+      records:
+        description: Recompute the records (~30 s)
         type: boolean
         default: false
 
@@ -26,6 +31,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       FULL_RATING: ${{ inputs.full || github.event.schedule == '40 2 * * *' }}
+      RECORDS: ${{ inputs.records || github.event.schedule == '40 2 * * *' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -37,5 +43,5 @@ jobs:
       - name: Rating
         run: uv run python -m ajr.rating ${{ env.FULL_RATING == 'true' && '--full' || '' }}
       - name: Records
-        if: env.FULL_RATING == 'true'
+        if: env.RECORDS == 'true'
         run: uv run python -m ajr.records
