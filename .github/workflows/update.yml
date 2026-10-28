@@ -1,14 +1,17 @@
 name: Update data
 
-# Every 3 hours: new data from judobase, then the rating from scratch.
+# Every 15 minutes: new data from judobase, then the rating recomputed from the
+# first competition whose results changed (nothing changed: nothing to do).
+# Nightly the rating is recomputed from scratch as a safety net.
 # Each step logs itself in the job_run table; a failed step stops the rest.
 on:
   schedule:
-    - cron: "17 */3 * * *" # not on the hour: GitHub's queue is long then
+    - cron: "*/15 * * * *"
+    - cron: "40 2 * * *" # nightly full rating (02:40 UTC)
   workflow_dispatch:
     inputs:
       full:
-        description: Re-fetch contests of every competition (about 15 minutes)
+        description: Re-fetch contests of every competition and rate from scratch (~15 min)
         type: boolean
         default: false
 
@@ -22,6 +25,7 @@ jobs:
     timeout-minutes: 60
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FULL_RATING: ${{ inputs.full || github.event.schedule == '40 2 * * *' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -31,4 +35,4 @@ jobs:
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
-        run: uv run python -m ajr.rating
+        run: uv run python -m ajr.rating ${{ env.FULL_RATING == 'true' && '--full' || '' }}

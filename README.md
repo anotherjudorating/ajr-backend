@@ -10,7 +10,7 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 
 | Workflow | When | Steps |
 |---|---|---|
-| `update.yml` | every 3 hours, or by hand (with an optional full re-fetch) | `alembic upgrade head` → `python -m ajr.sync` → `python -m ajr.rating` |
+| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | `alembic upgrade head` → `python -m ajr.sync` → `python -m ajr.rating` |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |
 
@@ -20,9 +20,10 @@ in `ajr.job_run` (type, status, start and end, traceback of a failure).
 
 - **sync** copies judobase: competitions happening now or in the next two weeks
   (draws, live results) and past competitions that changed. `--full` re-fetches all.
-- **rating** recomputes Glicko-2 over every contest from scratch (about a minute) and
-  replaces `ajr.rating_change` in one transaction. Parameters and how they were
-  chosen: `src/ajr/rating/tune.py` and `tune_ranking.py`.
+- **rating** recomputes Glicko-2 from the first competition whose results changed
+  since the last run (the sync marks it), or from scratch with `--full`; why and how:
+  `src/ajr/rating/job.py`. Parameters and how they were chosen:
+  `src/ajr/rating/tune.py` and `tune_ranking.py`.
 
 ## Local development
 

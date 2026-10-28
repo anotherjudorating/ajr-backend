@@ -119,8 +119,8 @@ def save_competitions(
         if competition.country_id not in country_ids:
             competition.country_id = None
         competitions.append(competition)
-    # `contests_synced_for` is ours: never overwritten by judobase data.
-    upsert(session, competitions, keep_columns={"contests_synced_for"})
+    # These columns are ours: never overwritten by judobase data.
+    upsert(session, competitions, keep_columns={"contests_synced_for", "results_changed_at"})
 
 
 def find_cycle(cycles: list[OlympicCycle], day: date | None) -> int | None:
@@ -223,14 +223,14 @@ async def save_competition_contests(
         contests.append(contest)
 
     with Session(engine) as session:
+        results_before = saved_results(session, competition.id)
         upsert(session, new_athletes, update_existing=False)
         upsert(session, contests)
         remove_missing_contests(session, competition.id, [contest.id for contest in contests])
-        session.execute(
-            update(Competition)
-            .where(Competition.id == competition.id)
-            .values(contests_synced_for=competition.updated_at)
-        )
+        values = {"contests_synced_for": competition.updated_at}
+        if saved_results(session, competition.id) != results_before:
+            values["results_changed_at"] = func.now()  # the rating picks it up
+        session.execute(update(Competition).where(Competition.id == competition.id).values(values))
         session.commit()
 
     known_athletes.update(athlete.id for athlete in new_athletes)
@@ -262,6 +262,16 @@ async def fetch_new_athletes(
             return from_contests[athlete_id]
 
     return list(await asyncio.gather(*(fetch_one(i) for i in from_contests)))
+
+
+def saved_results(session: Session, competition_id: int) -> dict[int, int]:
+    """Decided contests of the competition: contest id -> winner id."""
+    rows = session.execute(
+        select(Contest.id, Contest.winner_id)
+        .where(Contest.competition_id == competition_id)
+        .where(Contest.winner_id.is_not(None))
+    )
+    return dict(rows.all())
 
 
 def remove_missing_contests(session: Session, competition_id: int, contest_ids: list[int]) -> None:

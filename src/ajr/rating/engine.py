@@ -59,17 +59,30 @@ CONTESTS_QUERY = text("""
     join ajr.competition cm on cm.id = ct.competition_id
     where ct.winner_id is not null and ct.blue_id is not null and ct.white_id is not null
       and cm.date_from is not null
+      and (cast(:since as date) is null or cm.date_from >= :since)
     order by cm.date_from, cm.id, ct.weight, ct.round desc nulls last, ct.fight_no, ct.id
 """)
 
 
-def load_contests(connection: Connection) -> list[ContestRecord]:
-    return [ContestRecord(*row) for row in connection.execute(CONTESTS_QUERY)]
+def load_contests(connection: Connection, since: date | None = None) -> list[ContestRecord]:
+    """Decided contests in rating order.
+
+    With `since`, only those of competitions starting that day or later.
+    """
+    return [ContestRecord(*row) for row in connection.execute(CONTESTS_QUERY, {"since": since})]
 
 
-def run(contests: list[ContestRecord], params: RatingParams) -> list[ContestOutcome]:
+def run(
+    contests: list[ContestRecord],
+    params: RatingParams,
+    start: dict[int, tuple[Rating, date]] | None = None,
+) -> list[ContestOutcome]:
+    """`start`: athletes' rating and last contest day before the first contest, when
+    continuing a previous run instead of starting from nothing."""
     ratings: dict[int, Rating] = {}
     last_day: dict[int, date] = {}
+    for athlete_id, (rating, day) in (start or {}).items():
+        ratings[athlete_id], last_day[athlete_id] = rating, day
     outcomes = []
 
     for contest in contests:

@@ -236,3 +236,57 @@ def test_command_line_run_is_logged(judobase, argv, run_type):
     [run] = stored(JobRun).values()
     assert (run.type, run.status) == (run_type, "success")
     assert set(stored(Contest)) == {11, 12}
+
+
+def results_changed_at(competition_id: int = 1):
+    return stored(Competition)[competition_id].results_changed_at
+
+
+def test_new_results_mark_the_competition(judobase):
+    add_past_competition(judobase)
+
+    sync()
+
+    assert results_changed_at() is not None
+
+
+def test_unchanged_results_leave_the_mark(judobase):
+    add_past_competition(judobase)
+    sync()
+    first_mark = results_changed_at()
+    # The competition changed in judobase (e.g. a name), its results did not.
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+
+    sync()
+
+    assert results_changed_at() == first_mark
+
+
+@pytest.mark.parametrize(
+    "new_contests",
+    [
+        [contest(11, 1, blue=100, white=200, winner=100), contest(12, 1, 200, 300, 300)],
+        [contest(11, 1, blue=100, white=200, winner=200)],  # a decided contest vanished
+    ],
+    ids=["winner changed", "contest removed"],
+)
+def test_changed_results_move_the_mark(judobase, new_contests):
+    add_past_competition(judobase)
+    sync()
+    first_mark = results_changed_at()
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    judobase.contests_of[1] = new_contests
+
+    sync()
+
+    assert results_changed_at() > first_mark
+
+
+def test_draw_without_results_does_not_mark(judobase):
+    judobase.competitions_list.append(competition(1, SOON, has_results=0))
+    judobase.contests_of[1] = [contest(11, 1, blue=100, white=200, winner=0)]
+    judobase.profiles.update({100: profile("NAME100"), 200: profile("NAME200")})
+
+    sync()
+
+    assert results_changed_at() is None

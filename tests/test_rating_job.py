@@ -3,10 +3,11 @@
 from datetime import date
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, update
 from sqlmodel import Session, select
 
 from ajr.core.db import engine
+from ajr.core.job_run import job_run
 from ajr.core.models import (
     Athlete,
     Competition,
@@ -136,9 +137,125 @@ def test_sync_can_delete_a_rated_contest():
 def test_command_line_run_is_logged():
     add_contests()
 
-    main()
+    main([])
 
     with Session(engine) as session:
         [run] = session.exec(select(JobRun)).all()
     assert (run.type, run.status) == ("rating", "success")
+    assert len(changes()) == 6
+
+
+# --- recomputing only what changed -------------------------------------------
+
+
+def rate(full: bool = False) -> None:
+    with job_run("rating_full" if full else "rating"):
+        run_rating(full=full)
+
+
+def mark_changed(competition_id: int) -> None:
+    """What the sync does when a result of the competition appears, changes or vanishes."""
+    with Session(engine) as session:
+        session.execute(
+            update(Competition)
+            .where(Competition.id == competition_id)
+            .values(results_changed_at=func.now())
+        )
+        session.commit()
+
+
+def without_seq(rows: dict) -> dict:
+    """Rows to compare: seq only orders them and may have gaps after deletions."""
+    return {key: row.model_dump(exclude={"seq"}) for key, row in rows.items()}
+
+
+def assert_same_as_full_run() -> None:
+    since_change = without_seq(changes())
+    rate(full=True)
+    assert since_change == without_seq(changes())
+
+
+def test_new_competition_is_rated_from_its_day():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Later", date_from=date(2026, 9, 1)))
+        session.flush()
+        session.add(contest(301, 30, blue=3, white=1, winner=3, weight="-73"))
+        session.commit()
+    mark_changed(30)
+
+    rate()
+
+    rows = changes()
+    assert (301, 1) in rows and (301, 3) in rows
+    assert rows[(102, 1)].next_fought_on == date(2026, 9, 1)  # linked to the new contest
+    assert_same_as_full_run()
+
+
+def test_corrected_result_in_the_past_is_rated_again():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.execute(update(Contest).where(Contest.id == 101).values(winner_id=2))
+        session.commit()
+    mark_changed(10)
+
+    rate()
+
+    assert changes()[(101, 2)].won is True
+    assert_same_as_full_run()
+
+
+def test_removed_contest_in_the_past():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.execute(delete(Contest).where(Contest.id == 102))
+        session.commit()
+    mark_changed(10)
+
+    rate()
+
+    assert (102, 1) not in changes()
+    assert changes()[(101, 1)].next_fought_on == LATEST  # athlete 1 has no later contest now
+    assert_same_as_full_run()
+
+
+def test_nothing_changed_nothing_to_do(caplog):
+    add_contests()
+    rate()
+    before = without_seq(changes())
+
+    with caplog.at_level("INFO"):
+        rate()
+
+    assert "No results changed" in caplog.text
+    assert without_seq(changes()) == before
+
+
+def test_changed_parameters_rate_everything():
+    add_contests()
+    rate()
+    # Athlete 2 rested three months before contest 201: RD growth matters there.
+    old = changes()[(201, 2)].rd_before
+
+    with job_run("rating"):
+        run_rating(params=RatingParams(rd_growth=8))
+
+    assert changes()[(201, 2)].rd_before > old
+    with Session(engine) as session:
+        assert session.get(RatingSettings, 1).rd_growth == 8
+
+
+def test_empty_rating_table_rates_everything():
+    """As right after a migration that empties rating_change."""
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.execute(delete(RatingChange))
+        session.commit()
+
+    rate()
+
     assert len(changes()) == 6

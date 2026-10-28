@@ -85,6 +85,14 @@ def prepare_database() -> None:
                     "exception when duplicate_object then null; end $$"
                 )
             )
+        # Like Supabase's pooler: floats are sent with fewer digits unless asked.
+        connection.execute(
+            text(
+                "do $$ begin execute format("
+                "'alter database %I set extra_float_digits = 0', current_database()); end $$"
+            )
+        )
+    engine.dispose()  # new connections pick the setting up
     command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
 
 

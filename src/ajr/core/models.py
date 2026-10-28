@@ -64,6 +64,11 @@ class Competition(SQLModel, table=True):
     # judobase `updated_at_ts`, and its value when the contests were last synced.
     updated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     contests_synced_for: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    # When the sync last saw a result of this competition appear, change or vanish;
+    # the rating is recomputed from the first such competition (see ajr/rating/job.py).
+    results_changed_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True), index=True
+    )
 
 
 class Contest(SQLModel, table=True):
@@ -140,6 +145,7 @@ class RatingChange(SQLModel, table=True):
     # next rating run recomputes everything.
     contest_id: int = Field(foreign_key=fk("contest"), primary_key=True, ondelete="CASCADE")
     athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    seq: int  # the contest's place in rating order (both rows of a contest share it)
     opponent_id: int = Field(foreign_key=fk("athlete"))
     fought_on: date
     # The day of the athlete's next contest; 9999-12-31 for the latest one.
