@@ -145,7 +145,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.16" },
-    { name = "judobase", specifier = ">=3.0.0" },
+    { name = "judobase", specifier = ">=3.1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic-settings", specifier = ">=2.10" },
     { name = "sqlmodel", specifier = ">=0.0.25" },
@@ -260,15 +260,15 @@ wheels = [
 
 [[package]]
 name = "judobase"
-version = "3.0.1"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/d2/1e688a470b441131d57ef28162a9c7e13a5a4444cb013f74c0dd1a67c667/judobase-3.0.1.tar.gz", hash = "sha256:7e77ba02bf13e41d1e26d8d822fc3d906d4848971e55b937bf8c37299116f443", size = 20121, upload-time = "2026-10-27T16:08:41.636Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e9/83/29a36092f7b417791b3aecf5df51ba2e7df69807cc351b23fb642516e41f/judobase-3.1.0.tar.gz", hash = "sha256:77baa32a24e7bcdf6a9048c402d7227efb14d43a0c65e7d62e58e24a6cb7024a", size = 21250, upload-time = "2026-10-28T14:18:14.842Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/18/9aa8198b1895cc5f2d11a825fcfc4e1223c877c55192df0302726d262cfb/judobase-3.0.1-py3-none-any.whl", hash = "sha256:d93044c86eec75a961fe80a737e8e7db01ae63551784f06e6abfc77cf9524f03", size = 19799, upload-time = "2026-10-27T16:08:40.329Z" },
+    { url = "https://files.pythonhosted.org/packages/35/72/f6503ef037931b593f9a60d83b9f60a98f02515b17defd7a0cdcf7f4f135/judobase-3.1.0-py3-none-any.whl", hash = "sha256:f8c9a80ab5fe884e631150cca11c87535226905111a71440b457b5be66af3875", size = 21028, upload-time = "2026-10-28T14:18:13.615Z" },
 ]
 
 [[package]]

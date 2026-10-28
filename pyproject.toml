@@ -8,7 +8,7 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.16",
-    "judobase>=3.0.0",
+    "judobase>=3.1.0",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.10",
     "sqlmodel>=0.0.25",

@@ -8,7 +8,7 @@ import asyncio
 import logging
 
 from aiohttp import ClientError
-from judobase import Competition, Contest, CountryShort, JudoBase, Judoka
+from judobase import Competition, Contest, CountryShort, JudoBase, Judoka, RankingEntry
 from tenacity import (
     before_sleep_log,
     retry,
@@ -61,3 +61,9 @@ class JudobaseClient:
     async def judoka(self, judoka_id: int) -> Judoka:
         async with self.limit:
             return await self.api.get_judoka_info(judoka_id)
+
+    @retry_on_network_errors
+    async def world_ranking(self) -> list[RankingEntry]:
+        """The current senior World Ranking List, every weight."""
+        async with self.limit:
+            return await self.api.world_ranking_list()

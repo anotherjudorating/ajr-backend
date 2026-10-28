@@ -91,3 +91,15 @@ def test_parallel_requests_are_limited():
     asyncio.run(scenario())
 
     assert most_at_once == MAX_PARALLEL_REQUESTS
+
+
+def test_world_ranking():
+    async def scenario():
+        async with JudobaseClient() as client:
+            client.api.world_ranking_list = AsyncMock(return_value=[])
+            await client.world_ranking()
+            return client.api
+
+    api = asyncio.run(scenario())
+
+    api.world_ranking_list.assert_awaited_once_with()

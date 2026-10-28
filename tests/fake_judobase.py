@@ -129,6 +129,18 @@ def profile(
     )
 
 
+def ranking_entry(
+    athlete_id: int, weight_id: int, place: int, points: int
+) -> judobase.RankingEntry:
+    return judobase.RankingEntry(
+        id_person=str(athlete_id),
+        id_age="1" if weight_id <= 7 else "2",
+        id_weight=str(weight_id),
+        place=str(place),
+        sum_points=str(points),
+    )
+
+
 class FakeJudobase:
     """Stands in for JudobaseClient and records which contests and profiles were asked for."""
 
@@ -138,6 +150,8 @@ class FakeJudobase:
         self.contests_of: dict[int, list[judobase.Contest]] = {}
         self.profiles: dict[int, judobase.Judoka] = {}
         self.broken_competitions: set[int] = set()
+        self.ranking: list[judobase.RankingEntry] = []
+        self.ranking_broken = False
         self.contest_requests: list[int] = []
         self.profile_requests: list[int] = []
 
@@ -158,6 +172,11 @@ class FakeJudobase:
         if competition_id in self.broken_competitions:
             raise ConnectionError("500")
         return self.contests_of.get(competition_id, [])
+
+    async def world_ranking(self) -> list[judobase.RankingEntry]:
+        if self.ranking_broken:
+            raise ConnectionError("500")
+        return self.ranking
 
     async def judoka(self, judoka_id: int) -> judobase.Judoka:
         self.profile_requests.append(judoka_id)

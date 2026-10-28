@@ -5,8 +5,12 @@ only map its fields to our columns.
 """
 
 import judobase
+from judobase.schemas import WEIGHT_ID_MAPPING
 
-from ajr.core.models import Athlete, Competition, Contest, Country
+from ajr.core.models import Athlete, Competition, Contest, Country, WrlRanking
+
+# judobase weight category id -> name, e.g. 2 -> "-66" (the senior categories)
+WEIGHT_NAMES = {int(weight_id): weight.value for weight, weight_id in WEIGHT_ID_MAPPING.items()}
 
 
 def text(value: str | None) -> str | None:
@@ -113,4 +117,13 @@ def white_athlete(item: judobase.Contest) -> Athlete | None:
         given_name=text(item.given_name_white),
         gender=gender_from_contest_code(item.contest_code_long),
         country_id=item.id_country_white,
+    )
+
+
+def wrl_entry(item: judobase.RankingEntry) -> WrlRanking:
+    return WrlRanking(
+        athlete_id=item.id_person,
+        weight=WEIGHT_NAMES[item.id_weight],
+        place=item.place,
+        points=item.sum_points,
     )

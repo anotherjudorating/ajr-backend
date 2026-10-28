@@ -9,7 +9,7 @@ from sqlmodel import Session
 
 from ajr.core.db import engine
 from ajr.core.job_run import job_run
-from ajr.core.models import Athlete, Competition, Contest, Country
+from ajr.core.models import Athlete, Competition, Contest, Country, WrlRanking
 from ajr.rating.job import run_rating
 
 pytestmark = pytest.mark.usefixtures("clean_db")
@@ -132,3 +132,21 @@ def test_site_role_cannot_read_our_tables():
     with pytest.raises(Exception) as error:
         call("select * from ajr.athlete")
     assert isinstance(error.value.orig, psycopg.errors.InsufficientPrivilege)
+
+
+def test_wrl_place_today_only():
+    add_data()
+    with Session(engine) as session:
+        session.add(WrlRanking(athlete_id=1, weight="-73", place=4, points=3000))
+        session.commit()
+
+    today = {
+        row["athlete_id"]: row["wrl_place"] for row in call("select * from api.leaderboard('-73')")
+    }
+    past = call("select * from api.leaderboard('-73', :day)", day=TODAY - timedelta(days=10))
+
+    assert today[1] == 4
+    assert today[2] is None  # not in the WRL
+    assert all(row["wrl_place"] is None for row in past)
+    [athlete] = call("select * from api.athlete(1)")
+    assert athlete["wrl_place"] == 4

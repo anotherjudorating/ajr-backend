@@ -178,3 +178,19 @@ class RatingSettings(SQLModel, table=True):
     tau: float
     rd_factor: float  # leaderboard score = rating - rd_factor * RD
     hide_after_days: int | None  # not in the table after this many days without contests
+
+
+class WrlRanking(SQLModel, table=True):
+    """The current IJF World Ranking List of seniors, shown next to our places.
+
+    Only athletes we have; replaced as a whole when judobase's list changes (weekly).
+    An athlete can be ranked in two weight categories.
+    """
+
+    __tablename__ = "wrl_ranking"
+    __table_args__ = {"schema": SCHEMA}
+
+    athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    weight: str = Field(primary_key=True)
+    place: int
+    points: int

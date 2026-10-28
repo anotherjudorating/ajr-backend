@@ -4,11 +4,28 @@ import asyncio
 from datetime import date, timedelta
 
 import pytest
-from fake_judobase import UPDATED, UPDATED_LATER, FakeJudobase, competition, contest, profile, utc
+from fake_judobase import (
+    UPDATED,
+    UPDATED_LATER,
+    FakeJudobase,
+    competition,
+    contest,
+    profile,
+    ranking_entry,
+    utc,
+)
 from sqlmodel import Session, SQLModel, select
 
 from ajr.core.db import engine
-from ajr.core.models import Athlete, Competition, Contest, Country, JobRun, OlympicCycle
+from ajr.core.models import (
+    Athlete,
+    Competition,
+    Contest,
+    Country,
+    JobRun,
+    OlympicCycle,
+    WrlRanking,
+)
 from ajr.sync import job
 from ajr.sync.__main__ import main
 
@@ -290,3 +307,65 @@ def test_draw_without_results_does_not_mark(judobase):
     sync()
 
     assert results_changed_at() is None
+
+
+# --- world ranking list -------------------------------------------------------
+
+
+def wrl() -> dict[tuple[int, str], tuple[int, int]]:
+    with Session(engine) as session:
+        return {
+            (e.athlete_id, e.weight): (e.place, e.points) for e in session.exec(select(WrlRanking))
+        }
+
+
+def test_world_ranking_of_known_athletes(judobase):
+    add_past_competition(judobase)
+    judobase.ranking = [
+        ranking_entry(100, weight_id=3, place=1, points=5000),
+        ranking_entry(200, weight_id=3, place=2, points=4000),
+        ranking_entry(200, weight_id=4, place=9, points=900),  # ranked in two categories
+        ranking_entry(999, weight_id=3, place=3, points=3000),  # never fought in our data
+    ]
+
+    sync()
+
+    assert wrl() == {(100, "-73"): (1, 5000), (200, "-73"): (2, 4000), (200, "-81"): (9, 900)}
+
+
+def test_new_world_ranking_replaces_the_old_one(judobase):
+    add_past_competition(judobase)
+    judobase.ranking = [ranking_entry(100, 3, 1, 5000), ranking_entry(200, 3, 2, 4000)]
+    sync()
+
+    judobase.ranking = [ranking_entry(200, 3, 1, 5100)]
+    sync()
+
+    assert wrl() == {(200, "-73"): (1, 5100)}
+
+
+@pytest.mark.parametrize("problem", ["error", "empty"])
+def test_world_ranking_problem_keeps_ours(judobase, problem):
+    add_past_competition(judobase)
+    judobase.ranking = [ranking_entry(100, 3, 1, 5000)]
+    sync()
+
+    if problem == "error":
+        judobase.ranking_broken = True
+    else:
+        judobase.ranking = []
+    sync()
+
+    assert wrl() == {(100, "-73"): (1, 5000)}
+
+
+def test_unchanged_world_ranking_is_not_rewritten(judobase, caplog):
+    add_past_competition(judobase)
+    judobase.ranking = [ranking_entry(100, 3, 1, 5000)]
+    sync()
+
+    with caplog.at_level("INFO"):
+        sync()
+
+    assert "World ranking" not in caplog.text
+    assert wrl() == {(100, "-73"): (1, 5000)}

@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, SQLModel
 
 from ajr.core.db import engine
-from ajr.core.models import Athlete, Competition, Contest, OlympicCycle
+from ajr.core.models import Athlete, Competition, Contest, OlympicCycle, WrlRanking
 from ajr.sync import parse
 from ajr.sync.client import JudobaseClient
 
@@ -67,6 +67,8 @@ async def run_sync(full: bool = False) -> None:
                 min(start + COMPETITIONS_PER_BATCH, len(competitions)),
                 len(competitions),
             )
+
+        await save_world_ranking(client, known_athletes)
 
     logger.info("Sync finished")
 
@@ -280,6 +282,43 @@ def remove_missing_contests(session: Session, competition_id: int, contest_ids: 
         delete(Contest)
         .where(Contest.competition_id == competition_id)
         .where(Contest.id.not_in(contest_ids))
+    )
+
+
+# --- world ranking list -------------------------------------------------------
+
+
+async def save_world_ranking(client: JudobaseClient, known_athletes: set[int]) -> None:
+    """Replace our copy of the WRL when judobase's list changed.
+
+    Athletes we don't have are left out (we couldn't show them anyway). An error or
+    an empty answer keeps our copy: the list only changes weekly.
+    """
+    try:
+        items = await client.world_ranking()
+    except Exception as error:
+        logger.error("World ranking: could not fetch it: %r", error)
+        return
+    entries = [entry for entry in map(parse.wrl_entry, items) if entry.athlete_id in known_athletes]
+    if not entries:
+        logger.warning("World ranking: judobase returned no entries, keeping ours")
+        return
+
+    with Session(engine) as session:
+        saved = {
+            (e.athlete_id, e.weight): (e.place, e.points)
+            for e in session.scalars(select(WrlRanking))
+        }
+        new = {(e.athlete_id, e.weight): (e.place, e.points) for e in entries}
+        if saved == new:
+            return
+        session.execute(delete(WrlRanking))
+        upsert(session, entries)
+        session.commit()
+    logger.info(
+        "World ranking: %d entries saved, %d of athletes we don't have left out",
+        len(entries),
+        len(items) - len(entries),
     )
 
 
