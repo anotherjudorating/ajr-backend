@@ -189,3 +189,104 @@ def test_previous_leaderboard_for_downgrade_loads():
 
     assert "wrl_place integer" in module.previous_leaderboard()
     assert "birth_year" not in module.previous_leaderboard()
+
+
+def add_moves() -> None:
+    """On top of add_data: 6 fought in -81 100 days ago and moves to -73 now; 4 comes
+    back to -73 after two years away."""
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Old -81", date_from=TODAY - timedelta(days=100)))
+        session.add(Competition(id=40, name="Comeback", date_from=TODAY - timedelta(days=10)))
+        session.add(Athlete(id=6, family_name="NAME6", given_name="Given", country_id=1))
+        session.add(Athlete(id=7, family_name="NAME7", given_name="Given", country_id=1))
+        session.flush()
+        session.add_all(
+            [
+                Contest(id=301, competition_id=30, blue_id=6, white_id=7, winner_id=6,
+                        weight="-81", round=0, round_name="Final"),
+                Contest(id=401, competition_id=40, blue_id=6, white_id=2, winner_id=6,
+                        weight="-73", round=1, round_name="Semi-Final"),
+                Contest(id=402, competition_id=40, blue_id=4, white_id=3, winner_id=4,
+                        weight="-73", round=1, round_name="Semi-Final"),
+                Contest(id=403, competition_id=40, blue_id=6, white_id=4, winner_id=4,
+                        weight="-73", round=0, round_name="Final"),
+            ]
+        )  # fmt: skip
+        session.commit()
+    with job_run("rating"):
+        run_rating(full=True)
+
+
+def test_leaderboard_counts_changes_across_weights():
+    add_data()
+    add_moves()
+
+    rows = {row["athlete_id"]: row for row in call("select * from api.leaderboard('-73')")}
+
+    # 6 was in the -81 table 90 days ago: the change is counted from that rating.
+    assert rows[6]["entry"] == "new"
+    assert rows[6]["places_up_90d"] is None
+    assert rows[6]["score_change_90d"] is not None
+    # 4 fought in -73 two years ago, then was hidden.
+    assert rows[4]["entry"] == "returning"
+    assert rows[4]["score_change_90d"] is not None
+    # 1 had no rating 90 days ago at all.
+    assert rows[1]["entry"] == "new"
+    assert rows[1]["score_change_90d"] is None
+
+
+def test_athlete_page_fields():
+    add_data()
+    add_moves()
+
+    [athlete] = call("select * from api.athlete(6)")
+
+    assert athlete["weights"] == ["-73", "-81"]  # the latest first
+    assert athlete["peak_score"] is not None and athlete["peak_on"] is not None
+    [peak_row] = [
+        row
+        for row in call("select * from api.leaderboard('-73', :day)", day=athlete["peak_on"])
+        if row["athlete_id"] == 6
+    ]
+    assert (athlete["peak_score"], athlete["peak_place"]) == (peak_row["score"], peak_row["place"])
+    assert athlete["score_change_90d"] is not None
+    assert athlete["places_up_90d"] is None  # not in the -73 table 90 days ago
+
+
+def test_athlete_history_of_one_weight_with_results():
+    add_data()
+    add_moves()
+
+    everything = call("select * from api.athlete_history(6)")
+    in_73 = call("select * from api.athlete_history(6, '-73')")
+
+    assert len(everything) == 3
+    assert [row["contest_id"] for row in in_73] == [403, 401]
+    assert {row["result"] for row in in_73} == {"silver"}  # lost the final
+    assert everything[-1]["result"] == "gold"  # won the -81 final
+    final = in_73[0]
+    assert final["opponent_score"] is not None
+    assert final["score_after"] < final["score_before"]  # lost
+
+
+def test_athlete_history_results_of_other_rounds():
+    add_data()
+
+    [semi] = call("select * from api.athlete_history(2)")
+
+    assert semi["result"] == "Semi-Final"  # the round 2 lost in
+
+
+def test_previous_functions_for_downgrade_load():
+    import importlib.util
+    from pathlib import Path
+
+    path = next(Path("migrations/versions").glob("*bc0c985bd1f9_athlete_page.py"))
+    spec = importlib.util.spec_from_file_location("athlete_page", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    leaderboard, athlete, history = module.previous_functions()
+    assert "entry text" not in leaderboard and "birth_year" in leaderboard
+    assert "wrl_place integer" in athlete and "peak_score" not in athlete
+    assert "only_weight" not in history
