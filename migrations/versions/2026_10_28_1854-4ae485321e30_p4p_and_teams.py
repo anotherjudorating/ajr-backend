@@ -6,9 +6,7 @@ Two more tables for the rankings page, both built from the weight tables of a da
 - api.p4p(gender): pound for pound. The candidates are the top 3 of every
   weight; each is measured against the 7 best others of their own weight (for
   the #1 that is #2-#8, for the #2 the #1 and #3-#8, so within a weight the
-  order stays). gap is the score minus their average score, win_probability
-  the average chance to beat them (the same Glicko formula as the contest
-  predictions). Best gap first.
+  order stays). gap is the score minus their average score. Best gap first.
 - api.teams(kind): nations, kind men / women / mixed. A nation's rating is the
   average score of its best athlete in every weight; a weight without one counts
   as the last place of that weight's table. Also how many weights the nation
@@ -47,7 +45,6 @@ returns table (
     rd integer,
     score integer,
     gap integer,
-    win_probability double precision,
     trend integer[]
 )
 language sql stable security definer
@@ -70,7 +67,6 @@ as $$
            round(c.rd)::integer,
            round(c.score)::integer,
            round(c.score - pack.score)::integer,
-           pack.win_probability,
            array(
                select round(s.score)::integer
                from unnest(array[150, 120, 90, 60, 30, 0]) ago(days)
@@ -81,11 +77,7 @@ as $$
     join ajr.athlete a on a.id = c.athlete_id
     left join ajr.country co on co.id = a.country_id
     cross join lateral (
-        select avg(o.score) as score,
-               avg(1 / (1 + exp(
-                   -1 / sqrt(1 + 3 * (o.rd ^ 2 + c.rd ^ 2) / 173.7178 ^ 2 / pi() ^ 2)
-                   * (c.rating - o.rating) / 173.7178
-               ))) as win_probability
+        select avg(o.score) as score
         from (
             select o.*
             from boards o

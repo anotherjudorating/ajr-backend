@@ -302,7 +302,7 @@ def test_p4p():
     assert [row["weight_place"] for row in rows] == sorted(row["weight_place"] for row in rows)
     leader = rows[0]
     assert (leader["place"], leader["weight_place"]) == (1, 1)
-    assert leader["gap"] > 0 and leader["win_probability"] > 0.5
+    assert leader["gap"] > 0
     assert [row["gap"] for row in rows] == sorted((row["gap"] for row in rows), reverse=True)
     # measured against the leader too, the others' gaps are smaller
     assert all(row["gap"] < leader["gap"] for row in rows[1:])
