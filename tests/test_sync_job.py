@@ -139,6 +139,22 @@ def test_winner_who_is_not_a_fighter_is_dropped(judobase):
     assert stored(Contest)[12].winner_id == 300
 
 
+def test_empty_answer_does_not_wipe_a_competition(judobase):
+    add_past_competition(judobase)
+    sync()
+    # A judobase glitch: the competition changed and comes back without contests.
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    judobase.contests_of[1] = []
+    judobase.contest_requests.clear()
+
+    sync()
+
+    assert set(stored(Contest)) == {11, 12}
+    assert stored(Competition)[1].contests_synced_for == utc(UPDATED)  # tried again next run
+    sync()
+    assert judobase.contest_requests == [1, 1]
+
+
 def test_contest_of_another_competition_is_skipped(judobase):
     add_past_competition(judobase)
     judobase.contests_of[1].append(contest(99, 2, blue=100, white=200, winner=100))

@@ -7,7 +7,9 @@ Order of work:
    - past competitions whose data changed in judobase since we last saved them,
    - every past competition with results when running with --full.
 3. For each of those competitions, in one transaction: new athletes, the contests,
-   and removal of contests judobase no longer lists.
+   and removal of contests judobase no longer lists. An empty answer for a
+   competition we already have contests of is taken as a judobase glitch: nothing
+   is removed and the competition is tried again next run.
 
 Every write is an upsert keyed by the judobase id, so running the sync twice gives
 the same result, and a crashed run simply continues where it stopped.
@@ -21,7 +23,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import judobase
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, SQLModel
 
@@ -185,6 +187,19 @@ async def save_competition_contests(
     known_athletes: set[int],
     country_ids: set[int],
 ) -> None:
+    if not items:
+        with Session(engine) as session:
+            saved = session.scalar(
+                select(func.count()).where(Contest.competition_id == competition.id)
+            )
+        if saved:
+            logger.warning(
+                "Competition %s: judobase returned no contests, keeping our %d",
+                competition.id,
+                saved,
+            )
+            return
+
     new_athletes = await fetch_new_athletes(client, items, known_athletes)
     for athlete in new_athletes:
         if athlete.country_id not in country_ids:

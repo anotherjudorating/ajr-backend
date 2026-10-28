@@ -1,0 +1,33 @@
+name: Backup
+
+# Weekly dump of our copy of judobase: countries, competitions, athletes, contests.
+# Everything else is rebuilt by the "Update data" workflow. Restore: see README.
+on:
+  schedule:
+    - cron: "41 3 * * 1" # Mondays 03:41 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # pg_dump wants a plain postgresql:// URL and must be as new as the server (17).
+          url="${DATABASE_URL/postgresql+psycopg:/postgresql:}"
+          echo "::add-mask::$url"
+          docker run --rm -v "$PWD:/backup" postgres:17 pg_dump "$url" \
+            --format=custom --no-owner --no-privileges \
+            --table=ajr.country --table=ajr.competition \
+            --table=ajr.athlete --table=ajr.contest \
+            --file="/backup/ajr-$(date -u +%F).dump"
+          ls -lh ajr-*.dump
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ajr-backup-${{ github.run_number }}
+          path: ajr-*.dump
+          retention-days: 90
+          if-no-files-found: error
