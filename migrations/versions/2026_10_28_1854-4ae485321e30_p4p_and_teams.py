@@ -4,10 +4,11 @@ Two more tables for the rankings page, both built from the weight tables of a da
 (ajr.board_at):
 
 - api.p4p(gender): pound for pound. The candidates are the top 3 of every
-  weight; each is measured against the chasing pack of their own weight: the
-  three best other athletes after the #1 (for the #1 that is #2-#4). gap is the
-  score minus their average score, win_probability the average chance to beat
-  them (the same Glicko formula as the contest predictions). Best gap first.
+  weight; each is measured against the 7 best others of their own weight (for
+  the #1 that is #2-#8, for the #2 the #1 and #3-#8, so within a weight the
+  order stays). gap is the score minus their average score, win_probability
+  the average chance to beat them (the same Glicko formula as the contest
+  predictions). Best gap first.
 - api.teams(kind): nations, kind men / women / mixed. A nation's rating is the
   average score of its best athlete in every weight; a weight without one counts
   as the last place of that weight's table. Also how many weights the nation
@@ -88,9 +89,9 @@ as $$
         from (
             select o.*
             from boards o
-            where o.weight = c.weight and o.place > 1 and o.athlete_id <> c.athlete_id
+            where o.weight = c.weight and o.athlete_id <> c.athlete_id
             order by o.place
-            limit 3
+            limit 7
         ) o
     ) pack
     where c.place <= 3 and pack.score is not null

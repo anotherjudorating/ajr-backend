@@ -304,6 +304,8 @@ def test_p4p():
     assert (leader["place"], leader["weight_place"]) == (1, 1)
     assert leader["gap"] > 0 and leader["win_probability"] > 0.5
     assert [row["gap"] for row in rows] == sorted((row["gap"] for row in rows), reverse=True)
+    # measured against the leader too, the others' gaps are smaller
+    assert all(row["gap"] < leader["gap"] for row in rows[1:])
     assert len(leader["trend"]) == 6 and leader["trend"][-1] == leader["score"]
     assert call("select * from api.p4p('women')") == []
 
