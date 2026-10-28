@@ -61,6 +61,24 @@ as $$
 $$
 """
 
+# How an athlete ended a competition, from their last decided contest in it:
+# gold/silver (the final), bronze/5th (a bronze contest), 7th (lost a repechage),
+# the round they lost in, or null while still in (or in pools).
+RESULT_LABEL = """
+create function ajr.result_label(round_name text, won boolean)
+returns text
+language sql immutable
+as $$
+    select case
+               when round_name = 'Final' then case when won then 'gold' else 'silver' end
+               when round_name = 'Bronze' then case when won then 'bronze' else '5th' end
+               when won then null
+               when round_name = 'Repechage' then '7th'
+               else round_name
+           end
+$$
+"""
+
 LEADERBOARD = """
 create function api.leaderboard(weight text, day date default current_date)
 returns table (
@@ -281,9 +299,7 @@ as $$
     -- Latest first; within a day the later round (judobase counts down to the final) first.
     -- weight is the category the contest counts for (an open-weight contest keeps
     -- the athlete's), and only_weight picks the contests of one category.
-    -- result: how the athlete ended the competition, from their last decided contest
-    -- in it: gold/silver (final), bronze/5th (bronze contest), 7th (lost a repechage),
-    -- the round they lost in, or null while still in (or in pools).
+    -- result: how the athlete ended the competition (ajr.result_label).
     select rc.contest_id,
            rc.fought_on,
            cm.id,
@@ -313,20 +329,18 @@ as $$
     left join ajr.rating_change orc
         on orc.contest_id = rc.contest_id and orc.athlete_id = rc.opponent_id
     left join lateral (
-        select case
-                   when last.round_name = 'Final' then
-                       case when last.winner_id = rc.athlete_id then 'gold' else 'silver' end
-                   when last.round_name = 'Bronze' then
-                       case when last.winner_id = rc.athlete_id then 'bronze' else '5th' end
-                   when last.winner_id = rc.athlete_id then null
-                   when last.round_name = 'Repechage' then '7th'
-                   else last.round_name::text
-               end as value
+        select ajr.result_label(last.round_name, last.winner_id = rc.athlete_id) as value
         from ajr.contest last
         where last.competition_id = ct.competition_id
           and last.weight = ct.weight
           and rc.athlete_id in (last.blue_id, last.white_id)
           and last.winner_id is not null
+          -- in some old competitions every contest is a "Final": no result there
+          and (select count(*)
+               from ajr.contest final
+               where final.competition_id = ct.competition_id
+                 and final.weight = ct.weight
+                 and final.round_name = 'Final') = 1
         order by last.round nulls last, last.fight_no desc
         limit 1
     ) result on true
@@ -369,7 +383,9 @@ def drop_api_functions() -> None:
 def upgrade() -> None:
     """Upgrade schema."""
     op.execute(SCORE_AT)
+    op.execute(RESULT_LABEL)
     op.execute("revoke execute on function ajr.score_at(integer, date) from public")
+    op.execute("revoke execute on function ajr.result_label(text, boolean) from public")
     drop_api_functions()
     op.execute("drop function api.athlete_history(integer)")
     for function in (LEADERBOARD, ATHLETE, ATHLETE_HISTORY):
@@ -384,4 +400,5 @@ def downgrade() -> None:
     for function in previous_functions():
         op.execute(function)
     grant_api()
+    op.execute("drop function ajr.result_label(text, boolean)")
     op.execute("drop function ajr.score_at(integer, date)")
