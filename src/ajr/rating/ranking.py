@@ -9,12 +9,15 @@ RD grows every day without contests, but slower and slower (like the square
 root of the time), so a strong athlete who stops fighting would stay on top for
 years. So, like FIDE: after `hide_after_days` without contests the athlete leaves
 the table until the next contest.
+
+The site gets the same table from the database function ajr.board_at (see the
+"api for the site" migration); tests/test_leaderboard_parity.py keeps them equal.
 """
 
 from dataclasses import dataclass
 from datetime import date
 
-from ajr.rating.engine import RatingParams
+from ajr.rating.engine import ContestOutcome, RatingParams
 from ajr.rating.glicko2 import grow_rd
 
 WEIGHTS = [
@@ -68,6 +71,20 @@ def standing(
         rd=rd,
         days_inactive=days_inactive,
     )
+
+
+def update_states(states: dict[int, AthleteState], outcome: ContestOutcome) -> None:
+    """Both athletes after the contest. An open-weight contest keeps their category."""
+    contest = outcome.contest
+    for athlete_id, after in (
+        (contest.blue_id, outcome.blue_after),
+        (contest.white_id, outcome.white_after),
+    ):
+        weight = contest.weight if contest.weight in WEIGHTS else None
+        if weight is None and athlete_id in states:
+            weight = states[athlete_id].weight
+        if weight is not None:
+            states[athlete_id] = AthleteState(after.rating, after.rd, contest.day, weight)
 
 
 def leaderboards(

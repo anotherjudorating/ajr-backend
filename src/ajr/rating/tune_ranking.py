@@ -21,7 +21,13 @@ from datetime import date, timedelta
 from ajr.core.db import engine
 from ajr.rating.engine import ContestOutcome, RatingParams, load_contests, run
 from ajr.rating.glicko2 import Rating, grow_rd, update
-from ajr.rating.ranking import WEIGHTS, AthleteState, RankingParams, leaderboards, standing
+from ajr.rating.ranking import (
+    AthleteState,
+    RankingParams,
+    leaderboards,
+    standing,
+    update_states,
+)
 
 CHOSEN = RatingParams()  # layer 1 is fixed
 PERIOD = (date(2015, 1, 1), date(2026, 10, 1))
@@ -91,16 +97,9 @@ def measure(outcomes: list[ContestOutcome], params: RankingParams) -> RankingMet
                     table_contests += 1
                     table_right += (blue_place.score > white_place.score) == contest.blue_won
 
-        for athlete_id, after in (
-            (contest.blue_id, outcome.blue_after),
-            (contest.white_id, outcome.white_after),
-        ):
-            contest_days[athlete_id].append(contest.day)
-            weight = contest.weight if contest.weight in WEIGHTS else None
-            if weight is None and athlete_id in states:
-                weight = states[athlete_id].weight  # an open-weight contest keeps the category
-            if weight is not None:
-                states[athlete_id] = AthleteState(after.rating, after.rd, contest.day, weight)
+        contest_days[contest.blue_id].append(contest.day)
+        contest_days[contest.white_id].append(contest.day)
+        update_states(states, outcome)
 
     stays = []
     for (athlete_id, last_day), months_count in months_in_top.items():
