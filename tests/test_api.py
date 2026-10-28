@@ -290,3 +290,38 @@ def test_previous_functions_for_downgrade_load():
     assert "entry text" not in leaderboard and "birth_year" in leaderboard
     assert "wrl_place integer" in athlete and "peak_score" not in athlete
     assert "only_weight" not in history
+
+
+def test_p4p():
+    add_data()
+    add_moves()
+
+    rows = call("select * from api.p4p('men')")
+
+    assert {row["weight"] for row in rows} == {"-73"}  # the only weight with a table
+    assert [row["weight_place"] for row in rows] == sorted(row["weight_place"] for row in rows)
+    leader = rows[0]
+    assert (leader["place"], leader["weight_place"]) == (1, 1)
+    assert leader["gap"] > 0 and leader["win_probability"] > 0.5
+    assert [row["gap"] for row in rows] == sorted((row["gap"] for row in rows), reverse=True)
+    assert len(leader["trend"]) == 6 and leader["trend"][-1] == leader["score"]
+    assert call("select * from api.p4p('women')") == []
+
+
+def test_teams():
+    add_data()
+    add_moves()
+    with Session(engine) as session:
+        session.add(Country(id=2, name="France", ioc="FRA"))
+        session.execute(update(Athlete).where(Athlete.id == 3).values(country_id=2))
+        session.commit()
+
+    rows = call("select * from api.teams('men')")
+
+    assert [row["country"] for row in rows] == ["JPN", "FRA"]
+    japan = rows[0]
+    # -73 (1 leads) and -81 (7 is still there)
+    assert (japan["place"], japan["weights_led"], japan["weights_top8"]) == (1, 2, 2)
+    assert japan["weights_filled"] == 2
+    assert rows[1]["weights_led"] == 0
+    assert [row["country"] for row in call("select * from api.teams('mixed')")] == ["JPN", "FRA"]
