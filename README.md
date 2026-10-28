@@ -10,7 +10,7 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 
 | Workflow | When | Steps |
 |---|---|---|
-| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | `alembic upgrade head` → `python -m ajr.sync` → `python -m ajr.rating` |
+| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | `alembic upgrade head` → `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |
 
@@ -33,6 +33,7 @@ echo 'DATABASE_URL=postgresql+psycopg://...' > .env   # the database to work wit
 uv run pytest           # starts a throwaway local Postgres; never touches .env's database
 uv run python -m ajr.sync
 uv run python -m ajr.rating
+uv run python -m ajr.records                  # all-time records (nightly in production)
 uv run python -m ajr.rating.tune --check 10   # parameter search on the real data
 ```
 
