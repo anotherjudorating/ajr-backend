@@ -20,6 +20,14 @@ resource "supabase_project" "ajr" {
 resource "supabase_settings" "ajr" {
   project_ref     = supabase_project.ajr.id
   ssl_enforcement = true
+
+  # The Data API serves only the `api` schema (functions for the site); `public`
+  # and our `ajr` tables are not reachable with the publishable key.
+  api = jsonencode({
+    db_schema            = "api"
+    db_extra_search_path = "public, extensions"
+    max_rows             = 1000 # the largest weight category has ~650 active athletes
+  })
 }
 
 data "supabase_pooler" "ajr" {
