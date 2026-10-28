@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import psycopg
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlmodel import Session
 
 from ajr.core.db import engine
@@ -150,3 +150,42 @@ def test_wrl_place_today_only():
     assert all(row["wrl_place"] is None for row in past)
     [athlete] = call("select * from api.athlete(1)")
     assert athlete["wrl_place"] == 4
+
+
+def test_leaderboard_details():
+    add_data()
+    with Session(engine) as session:
+        session.execute(update(Athlete).where(Athlete.id == 1).values(dob_year=2000))
+        session.execute(
+            update(Competition)
+            .where(Competition.id == 10)
+            .values(rank_name="Grand Slam", city="Abu Dhabi")
+        )
+        session.commit()
+
+    [leader] = [r for r in call("select * from api.leaderboard('-73')") if r["athlete_id"] == 1]
+
+    assert leader["birth_year"] == 2000
+    assert leader["places_up_6m"] is None  # not in the table 6 months ago
+    # trend: 150 .. 30 days ago nothing (the contests were 30 days ago), then today's score
+    assert leader["trend"][-1] == leader["score"]
+    assert len(leader["trend"]) == 6
+    assert (leader["last_competition_id"], leader["last_competition_rank"]) == (10, "Grand Slam")
+    assert (leader["last_competition_name"], leader["last_competition_city"]) == (
+        "Grand Slam",
+        "Abu Dhabi",
+    )
+
+
+def test_previous_leaderboard_for_downgrade_loads():
+    """The downgrade rebuilds the function from the earlier migration's code."""
+    import importlib.util
+    from pathlib import Path
+
+    path = next(Path("migrations/versions").glob("*fbd2c1b2e12c_leaderboard_details.py"))
+    spec = importlib.util.spec_from_file_location("leaderboard_details", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert "wrl_place integer" in module.previous_leaderboard()
+    assert "birth_year" not in module.previous_leaderboard()
