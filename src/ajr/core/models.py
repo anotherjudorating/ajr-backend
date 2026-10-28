@@ -6,6 +6,7 @@ Ids of countries, athletes, competitions and contests are judobase ids.
 from datetime import date, datetime
 
 from sqlalchemy import DateTime, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 SCHEMA = "ajr"
@@ -194,3 +195,25 @@ class WrlRanking(SQLModel, table=True):
     weight: str = Field(primary_key=True)
     place: int
     points: int
+
+
+class Record(SQLModel, table=True):
+    """All-time bests for the records page, recomputed as a whole by `python -m ajr.records`.
+
+    One row per place of a record; which ids are set depends on the record (an
+    athlete, a pair of athletes, a nation, a competition).
+    """
+
+    __table_args__ = (Index("ix_record_record_place", "record", "place"), {"schema": SCHEMA})
+
+    id: int | None = Field(default=None, primary_key=True)
+    record: str  # e.g. highest_rating (see ajr/records/job.py)
+    place: int  # ties share a place
+    athlete_id: int | None = Field(default=None, foreign_key=fk("athlete"))
+    opponent_id: int | None = Field(default=None, foreign_key=fk("athlete"))
+    country_id: int | None = Field(default=None, foreign_key=fk("country"))
+    competition_id: int | None = Field(default=None, foreign_key=fk("competition"))
+    weight: str | None = None
+    value: float  # what the record is about: a score, weeks, a count, an age
+    detail: dict | None = Field(default=None, sa_type=JSONB)  # e.g. gold/silver/bronze
+    day: date | None = None  # when it happened
