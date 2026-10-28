@@ -51,7 +51,17 @@ Everything except the judobase copy is rebuilt from it, so a restore is:
    ```
 4. Rebuild the rating: `uv run python -m ajr.rating`.
 
-## Infrastructure
+## Supabase settings
 
-`infra/` holds the Supabase project in Terraform. The state file and variables are
-not in git; `infra/.env` holds `SUPABASE_ACCESS_TOKEN`.
+The project is set up by hand in the Supabase dashboard (organization
+anotherjudorating, region Frankfurt / eu-central-1). Settings that matter:
+
+- Data API enabled, **Exposed schemas: `api` only** (Project Settings → Data API);
+  "automatically expose new tables" off, automatic RLS on.
+- `DATABASE_URL` is the **Session pooler** connection string (IPv4; the direct
+  connection is IPv6 only, which GitHub runners can't reach), with the driver in it:
+  `postgresql+psycopg://postgres.<ref>:<password>@aws-1-eu-central-1.pooler.supabase.com:5432/postgres`.
+- The site uses the Project URL and the publishable key (role `anon`), which can only
+  call the `api` functions.
+
+Everything inside the database comes from the migrations: `uv run alembic upgrade head`.
