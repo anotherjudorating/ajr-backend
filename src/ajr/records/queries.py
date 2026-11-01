@@ -12,6 +12,11 @@ WORLD_TOUR = "('Grand Slam', 'Grand Prix', 'Masters', 'World Championships', 'Ol
 MEDALS = "('gold', 'silver', 'bronze')"
 # A score of an athlete whose rating is still a guess (a few contests) is not a record.
 SETTLED_RD = 100
+# The data starts in 2009 and the ratings need about two years to settle (in 2009-10
+# the favourite won 57-67% of contests and RDs were high, from 2011 on 68-71%), so
+# the records that rest on ratings count from 2011; counts (medals, streaks,
+# rivalries) use all the data. Also the start of the weekly records (weekly.py).
+RATINGS_SINCE = "2011-01-01"
 
 SETUP = [
     # How every athlete ended every individual competition (ajr.result_label). Only
@@ -54,6 +59,11 @@ SETUP = [
     join ajr.contest ct on ct.id = rc.contest_id
     where not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
     """,
+    # Those since the ratings settled.
+    f"""
+    create temp table rated_fight on commit drop as
+    select * from fight where fought_on >= '{RATINGS_SINCE}'
+    """,
 ]
 
 RECORDS = {
@@ -68,6 +78,7 @@ RECORDS = {
             from ajr.rating_change rc
             cross join ajr.rating_settings s
             where rc.next_fought_on > rc.fought_on and rc.weight is not null
+              and rc.fought_on >= '{RATINGS_SINCE}'
             order by rc.athlete_id, value desc
         ) best
         order by 1
@@ -82,7 +93,7 @@ RECORDS = {
                    (array_agg(rating_after order by seq desc))[1]
                    - (array_agg(rating_before order by seq))[1] as value,
                    (array_agg(rd_before order by seq))[1] as rd_before
-            from fight
+            from rated_fight
             group by athlete_id, competition_id
         ) gain
         where rd_before <= {SETTLED_RD}
@@ -175,7 +186,7 @@ RECORDS = {
     "biggest_upsets": f"""
         select rank() over (order by win_probability), athlete_id, opponent_id, null::int,
                competition_id, weight, win_probability, null::jsonb, fought_on
-        from fight
+        from rated_fight
         where won
         order by win_probability
         limit {TOP}
@@ -184,7 +195,7 @@ RECORDS = {
     "giant_killer": f"""
         select rank() over (order by count(*) desc), athlete_id, null::int, null::int, null::int,
                null, count(*), null::jsonb, max(fought_on)
-        from fight
+        from rated_fight
         where won and win_probability <= 0.3
         group by athlete_id
         order by 1
@@ -211,7 +222,7 @@ RECORDS = {
         with entrants as (
             select distinct on (athlete_id, competition_id)
                    athlete_id, competition_id, weight, score_before
-            from fight
+            from rated_fight
             order by athlete_id, competition_id, seq
         ),
         best as (
@@ -249,7 +260,7 @@ RECORDS = {
                    'favourites_won', avg((win_probability > 0.5)::int)
                ),
                min(fought_on)
-        from fight
+        from rated_fight
         where won
         group by competition_id
         having count(*) >= 100
@@ -264,7 +275,7 @@ RECORDS = {
                    'favourites_won', avg((win_probability > 0.5)::int)
                ),
                min(fought_on)
-        from fight
+        from rated_fight
         where won
         group by competition_id
         having count(*) >= 100
