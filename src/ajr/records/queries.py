@@ -50,7 +50,7 @@ SETUP = [
     # Real fights (no byes, no walkovers), with the scores around them.
     """
     create temp table fight on commit drop as
-    select rc.athlete_id, rc.opponent_id, rc.seq, rc.fought_on, rc.weight, rc.won,
+    select rc.athlete_id, rc.opponent_id, rc.contest_id, rc.seq, rc.fought_on, rc.weight, rc.won,
            rc.win_probability, rc.rd_before, ct.competition_id,
            rc.rating_before, rc.rating_after,
            rc.rating_before - s.rd_factor * rc.rd_before as score_before
@@ -182,10 +182,11 @@ RECORDS = {
         order by 1
         limit {TOP}
     """,
-    # The winner's chance before the contest.
+    # The winner's chance before the contest; the contest in the detail.
     "biggest_upsets": f"""
         select rank() over (order by win_probability), athlete_id, opponent_id, null::int,
-               competition_id, weight, win_probability, null::jsonb, fought_on
+               competition_id, weight, win_probability,
+               jsonb_build_object('contest', contest_id), fought_on
         from rated_fight
         where won
         order by win_probability

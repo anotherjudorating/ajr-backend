@@ -53,6 +53,7 @@ def test_records():
     [streak] = [row for row in records["longest_winning_streak"] if row["athlete_id"] == 1]
     assert streak["value"] == 2
     assert records["highest_rating"][0]["family_name"].startswith("NAME")
+    assert all(row["detail"]["contest"] for row in records["biggest_upsets"])
     rivalry = records["most_frequent_rivalry"][0]
     assert rivalry["value"] == 1 and rivalry["opponent_id"] is not None
     # too few athletes in a table for the weekly records
