@@ -11,6 +11,7 @@ from ajr.core.db import engine
 from ajr.core.job_run import job_run
 from ajr.core.models import Athlete, Competition, Contest, Country, WrlRanking
 from ajr.rating.job import run_rating
+from ajr.rating.snapshot import refresh_snapshot
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -44,6 +45,13 @@ def add_data() -> None:
         session.commit()
     with job_run("rating"):
         run_rating()
+
+
+def refresh() -> None:
+    """Rebuild today's tables after changing data the rating run already saw."""
+    with Session(engine) as session:
+        refresh_snapshot(session)
+        session.commit()
 
 
 def call(sql: str, **params) -> list:
@@ -82,7 +90,15 @@ def test_leaderboard_change_over_90_days():
     add_data()
     later = TODAY + timedelta(days=100)
 
-    rows = call("select * from api.leaderboard('-73', :day)", day=later)
+    # the full table of another day than today, as the rating job would build it
+    with engine.connect() as connection:
+        rows = (
+            connection.execute(
+                text("select * from ajr.leaderboard_full('-73', :day)"), {"day": later}
+            )
+            .mappings()
+            .all()
+        )
 
     leader = rows[0]
     assert leader["places_up_90d"] == 0
@@ -139,6 +155,7 @@ def test_wrl_place_today_only():
     with Session(engine) as session:
         session.add(WrlRanking(athlete_id=1, weight="-73", place=4, points=3000))
         session.commit()
+    refresh()
 
     today = {
         row["athlete_id"]: row["wrl_place"] for row in call("select * from api.leaderboard('-73')")
@@ -162,6 +179,7 @@ def test_leaderboard_details():
             .values(rank_name="Grand Slam", city="Abu Dhabi")
         )
         session.commit()
+    refresh()
 
     [leader] = [r for r in call("select * from api.leaderboard('-73')") if r["athlete_id"] == 1]
 
@@ -327,3 +345,55 @@ def test_teams():
     assert japan["weights_filled"] == 2
     assert rows[1]["weights_led"] == 0
     assert [row["country"] for row in call("select * from api.teams('mixed')")] == ["JPN", "FRA"]
+
+
+def test_leaderboard_today_comes_from_the_snapshot():
+    add_data()
+
+    today = call("select * from api.leaderboard('-73')")
+    with engine.connect() as connection:
+        full = connection.execute(
+            text("select * from ajr.leaderboard_full('-73', current_date)")
+        ).all()
+
+    assert [tuple(row.values()) for row in today] == [tuple(row) for row in full]
+
+
+def test_leaderboard_of_another_day_is_plain():
+    add_data()
+
+    rows = call("select * from api.leaderboard('-73', :day)", day=TODAY - timedelta(days=10))
+
+    leader = rows[0]
+    assert (leader["athlete_id"], leader["family_name"]) == (1, "NAME1")
+    assert leader["score"] is not None
+    assert all(
+        leader[key] is None for key in ("places_up_90d", "score_change_90d", "trend", "entry")
+    )
+
+
+def test_snapshot_is_rebuilt_even_when_no_result_changed():
+    add_data()
+    with Session(engine) as session:
+        session.execute(update(Athlete).where(Athlete.id == 1).values(family_name="RENAMED"))
+        session.commit()
+    with job_run("rating"):
+        run_rating()  # nothing to recompute
+
+    [leader] = [r for r in call("select * from api.leaderboard('-73')") if r["athlete_id"] == 1]
+    assert leader["family_name"] == "RENAMED"
+
+
+def test_full_leaderboard_is_built_from_the_previous_function():
+    """The snapshot migration turns the previous api.leaderboard into ajr.leaderboard_full."""
+    import importlib.util
+    from pathlib import Path
+
+    path = next(Path("migrations/versions").glob("*a780ebc52e26_leaderboard_snapshot.py"))
+    spec = importlib.util.spec_from_file_location("leaderboard_snapshot", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    full = module.leaderboard_full()
+    assert "create function ajr.leaderboard_full(weight text, day date)" in full
+    assert "security definer" not in full and "leaderboard.day" not in full
