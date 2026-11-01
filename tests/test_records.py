@@ -84,6 +84,10 @@ def test_weekly_records(monkeypatch):
     at_1 = {row["athlete_id"]: row for row in records["longest_at_1"]}
     assert 1 in at_1 and at_1[1]["weight"] == "-73"
     assert records["youngest_1"][0]["athlete_id"] == 1
+    # pound for pound #1 is always one of the weights' leaders
+    assert {row["athlete_id"] for row in records["longest_p4p_1"]} <= set(at_1)
+    assert records["youngest_p4p_1"] and records["biggest_p4p_lead"][0]["value"] > 0
+    assert "biggest_lead" not in records
     assert "highest_team_rating" not in records  # needs a table in every weight
 
 
@@ -142,3 +146,14 @@ def test_command_line():
     main()
 
     assert call("select * from api.records(1)") != []
+
+
+def test_weekly_records_count_from_when_the_ratings_settled(monkeypatch):
+    monkeypatch.setattr(weekly, "MIN_TABLE", 1)
+    monkeypatch.setattr(weekly, "SINCE", date.today() + timedelta(days=30))
+    prepare()
+    run_records()
+
+    records = by_record(call("select * from api.records(10)"))
+
+    assert "longest_at_1" not in records and "longest_p4p_1" not in records
