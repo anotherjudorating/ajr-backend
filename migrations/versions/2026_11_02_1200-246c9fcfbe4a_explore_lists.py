@@ -14,7 +14,7 @@ every run (ajr/rating/snapshot.py), next to today's rankings:
 The site reads them with:
 - api.competitions(for_year, ranks): the tournaments of a year (all with null),
   latest first, with their stats.
-- api.contests(for_year, only_weight, competition_id, upsets, sort, top, skip):
+- api.contests(for_year, only_weight, competition_id, upsets, q, sort, top, skip):
   a page of decided contests of a year (this one by default: all years at once
   are 200k contests, past the Data API's limit) and the number that match.
 - api.athletes(q, country, gender, only_weight, sort, top, skip): a page of
@@ -101,6 +101,7 @@ create function api.contests(
     only_weight text default null,
     competition_id integer default null,
     upsets boolean default false,
+    q text default null,
     sort text default 'date-desc',
     top integer default 50,
     skip integer default 0
@@ -130,9 +131,14 @@ returns table (
 language sql stable security definer
 set search_path = ''
 as $$
-    -- Decided real fights. sort: date-desc, date-asc or chance-asc (the least likely
-    -- wins first). change: the rating's change in the contest. total: all that match.
-    with matching as (
+    -- Decided real fights. q: every word starts a family or given name of one of the
+    -- two athletes. sort: date-desc, date-asc or chance-asc (the least likely wins
+    -- first). change: the rating's change in the contest. total: all that match.
+    with words as (
+        select word from unnest(string_to_array(lower(trim(coalesce(contests.q, ''))), ' ')) word
+        where word <> ''
+    ),
+    matching as (
         select ct.id, ct.competition_id, cm.name, wr.fought_on, ct.weight, ct.round_name,
                ct.round, ct.fight_no, ct.winner_id,
                ct.white_id, wr.win_probability as white_chance,
@@ -154,9 +160,18 @@ as $$
           and (contests.competition_id is null or ct.competition_id = contests.competition_id)
     ),
     picked as (
-        select *, count(*) over () as total
-        from matching
-        where not contests.upsets or winner_chance <= 0.35
+        select m.*, count(*) over () as total
+        from matching m
+        where (not contests.upsets or m.winner_chance <= 0.35)
+          and (contests.q is null or exists (
+              select from ajr.athlete a
+              where a.id in (m.white_id, m.blue_id)
+                and not exists (
+                    select from words
+                    where lower(coalesce(a.family_name, '')) not like words.word || '%'
+                      and lower(coalesce(a.given_name, '')) not like words.word || '%'
+                )
+          ))
     )
     select p.total, p.id, p.competition_id, p.name::text, p.fought_on, p.weight::text,
            p.round_name::text, p.winner_id,
@@ -260,7 +275,7 @@ $$
 
 FUNCTIONS = {
     "api.competitions(integer, text[])": COMPETITIONS,
-    "api.contests(integer, text, integer, boolean, text, integer, integer)": CONTESTS,
+    "api.contests(integer, text, integer, boolean, text, text, integer, integer)": CONTESTS,
     "api.athletes(text, text, text, text, text, integer, integer)": ATHLETES,
     "api.nations()": NATIONS,
 }
