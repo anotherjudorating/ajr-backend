@@ -261,3 +261,30 @@ class MatchupViews(SQLModel, table=True):
     a: int = Field(foreign_key=fk("athlete"), primary_key=True)
     b: int = Field(foreign_key=fk("athlete"), primary_key=True)
     views: int = 0
+
+
+class CompetitionStats(SQLModel, table=True):
+    """Per tournament, for the Explore lists; rebuilt by the rating job."""
+
+    __tablename__ = "competition_stats"
+    __table_args__ = {"schema": SCHEMA}
+
+    competition_id: int = Field(foreign_key=fk("competition"), primary_key=True)
+    contests: int  # real fights: no byes, no 0:00 walkovers
+    accuracy: float | None = None  # share of them the favourite won
+    upsets: int  # won with a chance of 35% or less
+
+
+class AthleteSummary(SQLModel, table=True):
+    """Per rated athlete, for the Explore lists; rebuilt by the rating job."""
+
+    __tablename__ = "athlete_summary"
+    __table_args__ = (Index("ix_athlete_summary_weight", "weight"), {"schema": SCHEMA})
+
+    athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    weight: str | None = None
+    last_contest: date
+    last_competition_id: int | None = Field(default=None, foreign_key=fk("competition"))
+    contests: int
+    place: int | None = None  # today, in the weight's table
+    score: int | None = None
