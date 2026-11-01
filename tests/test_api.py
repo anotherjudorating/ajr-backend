@@ -397,3 +397,33 @@ def test_full_leaderboard_is_built_from_the_previous_function():
     full = module.leaderboard_full()
     assert "create function ajr.leaderboard_full(weight text, day date)" in full
     assert "security definer" not in full and "leaderboard.day" not in full
+
+
+def test_contest():
+    add_data()
+    with Session(engine) as session:
+        session.execute(
+            update(Contest)
+            .where(Contest.id == 102)
+            .values(duration="00:02:41", ippon_b=1, waza_b=1, penalty_w=2, golden_score=False)
+        )
+        session.commit()
+
+    [contest] = call("select * from api.contest(102)")
+
+    assert (contest["competition"], contest["round"], contest["weight"]) == (
+        "Grand Slam",
+        "Final",
+        "-73",
+    )
+    assert (contest["blue_id"], contest["white_id"], contest["winner_id"]) == (1, 3, 1)
+    assert (contest["blue_ippon"], contest["blue_waza"], contest["white_shido"]) == (1, 1, 2)
+    assert contest["duration"] == "00:02:41"
+    assert contest["blue_rating_after"] > contest["blue_rating_before"]
+    assert contest["blue_score_before"] < contest["blue_rating_before"]
+    assert contest["blue_win_probability"] + contest["white_win_probability"] == pytest.approx(1)
+    assert contest["blue_family_name"] == "NAME1"
+
+
+def test_contest_not_found():
+    assert call("select * from api.contest(424242)") == []
