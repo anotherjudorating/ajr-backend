@@ -92,6 +92,14 @@ def prepare_database() -> None:
                 "'alter database %I set extra_float_digits = 0', current_database()); end $$"
             )
         )
+        # Like Supabase: no JIT. Postgres 17 (CI) has it on, and compiling the
+        # rankings snapshot's query took seconds on a few rows.
+        connection.execute(
+            text(
+                "do $$ begin execute format("
+                "'alter database %I set jit = off', current_database()); end $$"
+            )
+        )
     engine.dispose()  # new connections pick the setting up
     command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
 
