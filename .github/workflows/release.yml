@@ -1,0 +1,30 @@
+name: Release
+
+# Publishing a release on GitHub deploys it: the database is migrated with the
+# release's code, then the rating runs once, which also rebuilds today's tables
+# for the site. From then on the update job (update.yml) runs this release's code.
+# Merging into main deploys nothing.
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: update-data # never at the same time as the update job
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked
+      - name: Migrate
+        run: uv run alembic upgrade head
+      - name: Rating
+        run: uv run python -m ajr.rating
