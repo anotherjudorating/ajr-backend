@@ -249,3 +249,15 @@ class LeaderboardSnapshot(SQLModel, table=True):
     last_competition_rank: str | None = None
     last_competition_city: str | None = None
     entry: str | None = None
+
+
+class MatchupViews(SQLModel, table=True):
+    """How many times the site showed a head-to-head pair (a < b): orders the popular
+    matchups once there are enough (see the "popular matchups" migration)."""
+
+    __tablename__ = "matchup_views"
+    __table_args__ = {"schema": SCHEMA}
+
+    a: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    b: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    views: int = 0
