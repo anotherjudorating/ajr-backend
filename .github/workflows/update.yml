@@ -5,6 +5,8 @@ name: Update data
 # Nightly the rating is recomputed from scratch as a safety net, then the records
 # (by hand: the `records` option).
 # Each step logs itself in the job_run table; a failed step stops the rest.
+# It runs the code of the latest release, whose migrations the release workflow
+# (release.yml) has applied: what is merged into main waits for the next release.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -34,10 +36,12 @@ jobs:
       RECORDS: ${{ inputs.records || github.event.schedule == '40 2 * * *' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags too
+      - name: Use the latest release
+        run: git checkout "$(git describe --tags --abbrev=0)"
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --locked
-      - name: Migrate
-        run: uv run alembic upgrade head
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
