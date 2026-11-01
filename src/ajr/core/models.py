@@ -5,7 +5,7 @@ Ids of countries, athletes, competitions and contests are judobase ids.
 
 from datetime import date, datetime
 
-from sqlalchemy import DateTime, Index
+from sqlalchemy import ARRAY, DateTime, Index, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -217,3 +217,35 @@ class Record(SQLModel, table=True):
     value: float  # what the record is about: a score, weeks, a count, an age
     detail: dict | None = Field(default=None, sa_type=JSONB)  # e.g. gold/silver/bronze
     day: date | None = None  # when it happened
+
+
+class LeaderboardSnapshot(SQLModel, table=True):
+    """Today's table of every weight, as api.leaderboard serves it, rebuilt by the
+    rating job (see ajr/rating/snapshot.py)."""
+
+    __tablename__ = "leaderboard_snapshot"
+    __table_args__ = {"schema": SCHEMA}
+
+    weight: str = Field(primary_key=True)
+    day: date
+    place: int
+    athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    family_name: str | None = None
+    given_name: str | None = None
+    country: str | None = None
+    rating: int | None = None
+    rd: int | None = None
+    score: int | None = None
+    last_contest: date | None = None
+    places_up_90d: int | None = None
+    score_change_90d: int | None = None
+    score_change_6m: int | None = None
+    wrl_place: int | None = None
+    places_up_6m: int | None = None
+    birth_year: int | None = None
+    trend: list[int | None] | None = Field(default=None, sa_type=ARRAY(Integer))
+    last_competition_id: int | None = None
+    last_competition_name: str | None = None
+    last_competition_rank: str | None = None
+    last_competition_city: str | None = None
+    entry: str | None = None

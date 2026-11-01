@@ -10,11 +10,14 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 
 | Workflow | When | Steps |
 |---|---|---|
-| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | `alembic upgrade head` → `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` |
+| `release.yml` | a release published on GitHub | `alembic upgrade head` → `python -m ajr.rating`, with the release's code |
+| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | with the latest release's code: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |
 
-Both data workflows need the repository secret `DATABASE_URL`
+A release is the deploy: merging into `main` changes nothing in production until
+the next release (tag `vX.Y.Z`) is published; then its migrations are applied and
+the update job switches to its code. The data workflows need the repository secret `DATABASE_URL`
 (`postgresql+psycopg://user:password@host:port/postgres`). Every step records itself
 in `ajr.job_run` (type, status, start and end, traceback of a failure).
 
