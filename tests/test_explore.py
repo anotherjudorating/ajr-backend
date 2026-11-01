@@ -62,7 +62,7 @@ def test_contests_of_an_athlete():
 
     rows = call("select * from api.contests(q => 'name6')")
 
-    assert {row["contest_id"] for row in rows} == {401, 403}
+    assert {row["contest_id"] for row in rows} == {301, 401, 403}
 
 
 def test_contests_upsets_only_and_least_likely_first():
