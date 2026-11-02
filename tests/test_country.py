@@ -1,5 +1,6 @@
 """The country page (api.country, api.country_leaders, api.country_history,
-api.country_tournaments), the nations rankings behind it and debuts at a tournament."""
+api.country_tournaments), the nations rankings behind it and the contests
+before a tournament."""
 
 from datetime import date, timedelta
 
@@ -123,16 +124,17 @@ def test_country_tournaments():
     assert [row["id"] for row in call("select * from api.country_tournaments('FRA')")] == [40, 10]
 
 
-def test_debut():
+def test_contests_before():
     prepare()
 
-    first = {row["athlete_id"]: row["debut"]
+    first = {row["athlete_id"]: row["contests_before"]
              for row in call("select * from api.competition_results(10)")}  # fmt: skip
-    later = {row["athlete_id"]: row["debut"]
+    later = {row["athlete_id"]: row["contests_before"]
              for row in call("select * from api.competition_results(40)")}  # fmt: skip
 
-    assert first == {1: True, 2: True, 3: True}
-    assert later == {2: False, 3: False, 4: False, 6: False}
+    assert first == {1: 0, 2: 0, 3: 0}  # debuts
+    # 2 and 3 fought once at 10, 4 once at 20, 6 once at 30
+    assert later == {2: 1, 3: 1, 4: 1, 6: 1}
 
 
 def test_nations_ranking_ties_share_a_place():
