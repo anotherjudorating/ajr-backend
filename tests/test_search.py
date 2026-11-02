@@ -95,3 +95,25 @@ def test_search_athletes_puts_the_weight_picked_first():
     assert set(found) >= set(board_73)  # every athlete can be found
     assert ids("-73")[: len(board_73)] == board_73
     assert call("select * from api.search_athletes('', null, 8)") == []
+
+
+def test_search_index():
+    add_data()
+    add_moves()
+    with Session(engine) as session:
+        session.add(Competition(id=90, name="Tokyo Grand Slam 2026", rank_name="Grand Slam",
+                                date_from=TODAY + timedelta(days=30)))  # fmt: skip
+        session.commit()
+
+    [index] = call("select api.search_index() as index")
+    index = index["index"]
+
+    athletes = index["athletes"]
+    in_tables = [row for row in athletes if row[6] is not None]
+    assert athletes[: len(in_tables)] == in_tables  # those in a table first
+    assert [row[7] for row in in_tables] == sorted((row[7] for row in in_tables), reverse=True)
+    one = next(row for row in athletes if row[0] == 1)
+    assert one[1:6] == ["NAME1", "Given", "JPN", None, "-73"]
+    assert [t[0] for t in index["tournaments"]][0] == 90  # the coming one first
+    assert {t[0] for t in index["tournaments"]} == {90, 10, 20, 30, 40}
+    assert index["nations"] == [["JPN", "Japan"]]
