@@ -32,8 +32,13 @@ STATES_QUERY = text("""
 
 
 def weekly_records(
-    connection: Connection, rating: RatingParams, ranking: RankingParams, today: date
+    connection: Connection,
+    rating: RatingParams,
+    ranking: RankingParams,
+    today: date,
+    nation_history: list[dict] | None = None,
 ) -> dict[str, list[dict]]:
+    """The records; every week's mixed nations ranking goes to `nation_history`."""
     rows = connection.execute(STATES_QUERY).all()
     if not rows:
         return {}
@@ -101,6 +106,8 @@ def weekly_records(
 
         if len(tables) == 14:  # team ratings only when every weight has a table
             ratings = team_ratings(tables, country)
+            if nation_history is not None:
+                nation_history.extend(nations_ranking(ratings, sunday))
             best_nation = max(ratings, key=ratings.get)
             nation_weeks[best_nation] += 1
             nation_last[best_nation] = sunday
@@ -191,6 +198,16 @@ def team_ratings(tables: dict[str, list[Standing]], country: dict[int, int | Non
         / len(last_place)
         for nation, by_weight in best.items()
     }
+
+
+def nations_ranking(ratings: dict[int, float], day: date) -> list[dict]:
+    """The nations of a week, best first; equal ratings share a place."""
+    rows = []
+    for nation, score in sorted(ratings.items(), key=lambda item: -item[1]):
+        rating = round(score)
+        place = rows[-1]["place"] if rows and rows[-1]["rating"] == rating else len(rows) + 1
+        rows.append({"day": day, "country_id": nation, "place": place, "rating": rating})
+    return rows
 
 
 def record(**fields) -> dict:
