@@ -8,6 +8,8 @@ the 3-second limit. So the rating job builds today's tables on every run (also
 when no result changed: names, IJF places or the day may have) into
 ajr.leaderboard_snapshot, and api.leaderboard serves them from there.
 
+Also the medal chances at tournaments with a published draw (ajr/rating/chances.py).
+
 Likewise today's nations rankings (ajr.nation_snapshot, for the country page),
 ranked as api.teams ranks them but from the tables just built; every nation's
 medals at every tournament (ajr.nation_competition, for the same page); and the Explore
@@ -17,10 +19,13 @@ and tournament, today's place and score).
 """
 
 import logging
+from datetime import date
 
 from sqlalchemy import text
 from sqlmodel import Session
 
+from ajr.rating.chances import medal_chances
+from ajr.rating.engine import RatingParams
 from ajr.rating.ranking import WEIGHTS
 
 logger = logging.getLogger(__name__)
@@ -155,3 +160,26 @@ def refresh_snapshot(session: Session) -> None:
     session.execute(text("delete from ajr.athlete_summary"))
     rows = session.execute(ATHLETE_SUMMARY).rowcount
     logger.info("Athlete summary: %d rows", rows)
+    refresh_chances(session)
+
+
+# The parameters the rating was computed with, to play brackets with the same.
+SETTINGS = text("""
+    select initial_rating, initial_rd, max_rd, rd_growth, initial_volatility, tau
+    from ajr.rating_settings
+""")
+
+
+def refresh_chances(session: Session, today: date | None = None) -> None:
+    """Replace the medal chances: a draw can appear and results come in at any run."""
+    settings = session.execute(SETTINGS).mappings().first()
+    params = RatingParams(**settings) if settings else RatingParams()
+    rows = medal_chances(session.connection(), today or date.today(), params)
+    session.execute(text("delete from ajr.medal_chance"))
+    if rows:
+        session.execute(
+            text("""insert into ajr.medal_chance (competition_id, weight, athlete_id, gold, medal)
+                    values (:competition_id, :weight, :athlete_id, :gold, :medal)"""),
+            rows,
+        )
+    logger.info("Medal chances: %d rows", len(rows))
