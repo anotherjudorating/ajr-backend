@@ -58,7 +58,8 @@ async def build(api: Api, rng: random.Random) -> list[Case]:
     """Every api function, with the arguments and the rows that make it work hardest
     or differently: a leader and an athlete hidden for years, the World Championships
     and a small Open, a big nation and a tiny one, empty and odd searches."""
-    today = date.fromisoformat((await api.json("last_update"))[:10])
+    updated = await api.json("last_update")  # null before the first rating run
+    today = date.fromisoformat(updated[:10]) if updated else date.today()
     cases = [Case("last_update"), Case("nations")]
 
     # rankings, today and in the past

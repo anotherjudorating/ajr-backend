@@ -56,7 +56,9 @@ jobs:
           git worktree add ../main origin/main
           (cd ../main && uv sync --locked && uv run alembic upgrade head)
           docker exec db sh -c 'pg_restore -U postgres -d postgres --data-only --disable-triggers /backup/*/*.dump'
-          (cd ../main && uv run python -m ajr.rating --full)
+          # as a release does: with no rating yet this is a full run, recorded as
+          # "rating", which api.last_update reads
+          (cd ../main && uv run python -m ajr.rating)
 
       - name: Load test of main
         run: |
@@ -66,7 +68,7 @@ jobs:
       - name: The copy with the pull request
         run: |
           uv run alembic upgrade head
-          uv run python -m ajr.rating --full
+          uv run python -m ajr.rating
           docker exec db psql -U postgres -c "notify pgrst, 'reload schema'"
 
       - name: Load test of the pull request
