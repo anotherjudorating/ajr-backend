@@ -8,14 +8,14 @@ the 3-second limit. So the rating job builds today's tables on every run (also
 when no result changed: names, IJF places or the day may have) into
 ajr.leaderboard_snapshot, and api.leaderboard serves them from there.
 
-Also the medal chances at tournaments with a published draw (ajr/rating/chances.py).
-
-Likewise today's nations rankings (ajr.nation_snapshot, for the country page),
-ranked as api.teams ranks them but from the tables just built; every nation's
-medals at every tournament (ajr.nation_competition, for the same page); and the Explore
-lists: ajr.competition_stats (per tournament: real fights, how often the favourite
-won, upsets) and ajr.athlete_summary (per athlete: the weight, the latest contest
-and tournament, today's place and score).
+Likewise today's pound-for-pound and nations tables (ajr.p4p_snapshot,
+ajr.teams_snapshot), which api.p4p and api.teams serve; the nations' places and
+ratings for the country page (ajr.nation_snapshot) and every nation's medals at
+every tournament (ajr.nation_competition); the Explore lists: ajr.competition_stats
+(per tournament: real fights, how often the favourite won, upsets) and
+ajr.athlete_summary (per athlete: the weight, the latest contest and tournament,
+today's place and score); and the medal chances at tournaments with a published
+draw (ajr/rating/chances.py).
 """
 
 import logging
@@ -144,12 +144,31 @@ NATION_COMPETITION = text("""
 """)
 
 
+# Today's pound-for-pound and nations tables, as api.p4p and api.teams serve them.
+P4P_SNAPSHOT = text("""
+    insert into ajr.p4p_snapshot
+    select g.gender, current_date, p.*
+    from unnest(array['men', 'women']) g(gender)
+    cross join lateral ajr.p4p_full(g.gender, current_date) p
+""")
+TEAMS_SNAPSHOT = text("""
+    insert into ajr.teams_snapshot
+    select k.kind, current_date, t.*
+    from unnest(array['men', 'women', 'mixed']) k(kind)
+    cross join lateral ajr.teams_full(k.kind, current_date) t
+""")
+
+
 def refresh_snapshot(session: Session) -> None:
     """Replace today's tables, nations rankings and the Explore summaries (in the
     caller's transaction, so the site never sees them empty)."""
     session.execute(text("delete from ajr.leaderboard_snapshot"))
     rows = session.execute(REBUILD, {"weights": WEIGHTS}).rowcount
     logger.info("Leaderboard snapshot: %d rows", rows)
+    session.execute(text("delete from ajr.p4p_snapshot"))
+    session.execute(P4P_SNAPSHOT)
+    session.execute(text("delete from ajr.teams_snapshot"))
+    session.execute(TEAMS_SNAPSHOT)
     session.execute(text("delete from ajr.nation_snapshot"))
     session.execute(NATION_SNAPSHOT, {"men": WEIGHTS[:7], "women": WEIGHTS[7:]})
     session.execute(text("delete from ajr.nation_competition"))

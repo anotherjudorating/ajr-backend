@@ -335,6 +335,7 @@ def test_teams():
         session.add(Country(id=2, name="France", ioc="FRA"))
         session.execute(update(Athlete).where(Athlete.id == 3).values(country_id=2))
         session.commit()
+    refresh()  # today's nations table is built by the rating job
 
     rows = call("select * from api.teams('men')")
 
