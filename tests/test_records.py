@@ -49,6 +49,9 @@ def test_records():
         (3, {"gold": 0, "silver": 1, "bronze": 0}),
     ]
     assert records["youngest_grand_slam_medal"][0]["athlete_id"] == 1
+    # records without a weight of their own carry the athlete's main weight
+    assert {row["weight"] for row in medals} == {"-73"}
+    assert {row["weight"] for row in records["longest_winning_streak"]} <= {"-73", "-81"}
     assert records["youngest_grand_slam_medal"][0]["value"] == 19
     [streak] = [row for row in records["longest_winning_streak"] if row["athlete_id"] == 1]
     assert streak["value"] == 2

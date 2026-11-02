@@ -59,6 +59,20 @@ SETUP = [
     join ajr.contest ct on ct.id = rc.contest_id
     where not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
     """,
+    # Each athlete's main weight, the one with the most contests: the weight of the
+    # records that have none of their own (medals, streaks, rivalries), for the
+    # site's weight filter.
+    """
+    create temp table main_weight on commit drop as
+    select distinct on (athlete_id) athlete_id, weight
+    from (
+        select athlete_id, weight, count(*) as contests
+        from ajr.rating_change
+        where weight is not null
+        group by athlete_id, weight
+    ) counted
+    order by athlete_id, contests desc, weight
+    """,
     # Those since the ratings settled.
     f"""
     create temp table rated_fight on commit drop as
@@ -102,7 +116,8 @@ RECORDS = {
     """,
     "most_world_tour_medals": f"""
         select rank() over (order by count(*) desc, count(*) filter (where result = 'gold') desc),
-               athlete_id, null::int, max(country_id), null::int, null, count(*),
+               athlete_id, null::int, max(country_id), null::int,
+               max(mw.weight), count(*),
                jsonb_build_object(
                    'gold', count(*) filter (where result = 'gold'),
                    'silver', count(*) filter (where result = 'silver'),
@@ -110,6 +125,7 @@ RECORDS = {
                ),
                max(day)
         from medal
+        left join main_weight mw using (athlete_id)
         group by athlete_id
         order by 1
         limit {TOP}
@@ -137,8 +153,9 @@ RECORDS = {
             order by athlete_id, streak desc, last_day
         )
         select rank() over (order by streak desc), athlete_id, null::int, country_id, null::int,
-               null, streak, jsonb_build_object('from', first_day), last_day
+               mw.weight, streak, jsonb_build_object('from', first_day), last_day
         from streaks
+        left join main_weight mw using (athlete_id)
         order by 1
         limit {TOP}
     """,
@@ -177,8 +194,9 @@ RECORDS = {
             order by athlete_id, streak desc, last_day
         )
         select rank() over (order by streak desc), athlete_id, null::int, null::int, null::int,
-               null, streak, jsonb_build_object('from', first_day), last_day
+               mw.weight, streak, jsonb_build_object('from', first_day), last_day
         from streaks
+        left join main_weight mw using (athlete_id)
         order by 1
         limit {TOP}
     """,
@@ -195,8 +213,9 @@ RECORDS = {
     # Wins with at most a 30% chance.
     "giant_killer": f"""
         select rank() over (order by count(*) desc), athlete_id, null::int, null::int, null::int,
-               null, count(*), null::jsonb, max(fought_on)
+               max(mw.weight), count(*), null::jsonb, max(fought_on)
         from rated_fight
+        left join main_weight mw using (athlete_id)
         where won and win_probability <= 0.3
         group by athlete_id
         order by 1
@@ -205,13 +224,14 @@ RECORDS = {
     # Contests between the same two athletes; wins and losses of the first one.
     "most_frequent_rivalry": f"""
         select rank() over (order by count(*) desc), athlete_id, opponent_id, null::int,
-               null::int, null, count(*),
+               null::int, max(mw.weight), count(*),
                jsonb_build_object(
                    'wins', count(*) filter (where won),
                    'losses', count(*) filter (where not won)
                ),
                max(fought_on)
         from fight
+        left join main_weight mw using (athlete_id)
         where athlete_id < opponent_id
         group by athlete_id, opponent_id
         order by 1

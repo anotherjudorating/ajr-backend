@@ -46,6 +46,7 @@ def weekly_records(
     last_at_1: dict[int, date] = {}
     first_at_1: dict[int, tuple[date, str]] = {}
     weeks_p4p: Counter[int] = Counter()
+    weights_p4p: dict[int, Counter[str]] = defaultdict(Counter)
     last_p4p: dict[int, date] = {}
     first_p4p: dict[int, tuple[date, str]] = {}
     p4p_lead: dict[int, tuple[float, date, str]] = {}
@@ -92,6 +93,7 @@ def weekly_records(
                 continue
             athlete_id, gap, weight = leader
             weeks_p4p[athlete_id] += 1
+            weights_p4p[athlete_id][weight] += 1
             last_p4p[athlete_id] = sunday
             first_p4p.setdefault(athlete_id, (sunday, weight))
             if athlete_id not in p4p_lead or gap > p4p_lead[athlete_id][0]:
@@ -130,7 +132,11 @@ def weekly_records(
             best="low",
         ),
         "longest_p4p_1": ranked(
-            [record(athlete_id=a, value=weeks, day=last_p4p[a]) for a, weeks in weeks_p4p.items()],
+            [
+                record(athlete_id=a, value=weeks, day=last_p4p[a],
+                       weight=weights_p4p[a].most_common(1)[0][0])
+                for a, weeks in weeks_p4p.items()
+            ],
             best="high",
         ),
         "youngest_p4p_1": ranked(
