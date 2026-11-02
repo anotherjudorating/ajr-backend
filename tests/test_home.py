@@ -3,6 +3,7 @@
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session
 
 from ajr.core.db import engine
@@ -41,6 +42,18 @@ def test_biggest_movers():
     # only athletes who were in their table 90 days ago: 7 (-81), not the -73 newcomers
     assert [row["athlete_id"] for row in rows] == [7]
     assert rows[0]["places_up_90d"] is not None
+
+
+def test_biggest_movers_were_near_the_top_already():
+    add_data()
+    add_moves()
+    with engine.begin() as connection:
+        # as if 7 had climbed from 60th place
+        connection.execute(
+            text("update ajr.leaderboard_snapshot set places_up_90d = 59 where athlete_id = 7")
+        )
+
+    assert call("select * from api.biggest_movers(5, 20)") == []
 
 
 def test_recent_upsets():
