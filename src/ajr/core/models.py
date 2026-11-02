@@ -137,6 +137,8 @@ class RatingChange(SQLModel, table=True):
     __table_args__ = (
         # The table of a weight category on a day.
         Index("ix_rating_change_weight_next_fought_on", "weight", "next_fought_on"),
+        # The same, for a day in the past: the contests of the year before it.
+        Index("ix_rating_change_weight_fought_on", "weight", "fought_on"),
         # An athlete's history.
         Index("ix_rating_change_athlete_id_fought_on", "athlete_id", "fought_on"),
         {"schema": SCHEMA},
