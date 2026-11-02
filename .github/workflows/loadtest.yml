@@ -1,0 +1,89 @@
+name: Load test
+
+# Every Data API function with the arguments the site sends (python -m ajr.loadtest),
+# through PostgREST, on a copy of production (the latest weekly backup) in a
+# Postgres limited like the Supabase Nano instance; first with main, then with the
+# pull request on the same copy. The summary shows both side by side. The job fails
+# only on failed calls of the pull request (timeouts, server errors); times and
+# pages read are for information.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read # the backup's artifact
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+      API: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # main too
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked
+
+      - name: The latest backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow backup.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          gh run download "$run" --dir backup
+          ls -lR backup
+
+      - name: Postgres like the Nano instance, PostgREST like Supabase's
+        run: |
+          docker network create ajr
+          docker run -d --name db --network ajr -p 5432:5432 --memory=1g \
+            -e POSTGRES_PASSWORD=postgres -v "$PWD/backup:/backup:ro" \
+            postgres:17 -c shared_buffers=128MB -c jit=off -c extra_float_digits=0
+          until docker exec db pg_isready -U postgres; do sleep 1; done
+          docker exec db psql -U postgres -c "create role anon" -c "create role authenticated" \
+            -c "alter role anon set statement_timeout = '3s'"
+          # the plan of a call (Accept: application/vnd.pgrst.plan): pages read
+          docker run -d --name api --network ajr -p 3000:3000 \
+            -e PGRST_DB_URI=postgres://postgres:postgres@db:5432/postgres \
+            -e PGRST_DB_SCHEMAS=api -e PGRST_DB_ANON_ROLE=anon \
+            -e PGRST_DB_PLAN_ENABLED=true -e PGRST_DB_POOL=10 \
+            postgrest/postgrest:v12.2.3
+
+      - name: The copy with main
+        run: |
+          git worktree add ../main origin/main
+          (cd ../main && uv sync --locked && uv run alembic upgrade head)
+          docker exec db sh -c 'pg_restore -U postgres -d postgres --data-only --disable-triggers /backup/*/*.dump'
+          (cd ../main && uv run python -m ajr.rating --full)
+
+      - name: Load test of main
+        run: |
+          .github/cold.sh
+          uv run python -m ajr.loadtest --api "$API" --plan --writes --out main.json || true
+
+      - name: The copy with the pull request
+        run: |
+          uv run alembic upgrade head
+          uv run python -m ajr.rating --full
+          docker exec db psql -U postgres -c "notify pgrst, 'reload schema'"
+
+      - name: Load test of the pull request
+        run: |
+          .github/cold.sh
+          uv run python -m ajr.loadtest --api "$API" --plan --writes --out pr.json
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f main.json ] && [ -f pr.json ]; then
+            uv run python -m ajr.loadtest.report main.json pr.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-${{ github.run_number }}
+          path: "*.json"
+          if-no-files-found: ignore
