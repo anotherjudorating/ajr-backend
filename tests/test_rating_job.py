@@ -1,6 +1,6 @@
 """The rating step against a real (test) database."""
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import delete, func, update
@@ -90,6 +90,55 @@ def test_next_fought_on_links_each_athlete_history():
     assert rows[(201, 2)].next_fought_on == LATEST
     # The second contest starts from the state after the first one.
     assert rows[(102, 1)].rating_before == pytest.approx(rows[(101, 1)].rating_after)
+
+
+def test_a_contest_dated_outside_its_competition_counts_on_the_competition_day():
+    add_contests()
+    with Session(engine) as session:
+        # judobase: the June Open's contest started in February, before the March Grand Slam
+        session.execute(
+            update(Contest).where(Contest.id == 201).values(started_at=datetime(2026, 2, 3, 10))
+        )
+        # a contest that started the day before its competition stays on its own day
+        session.execute(
+            update(Contest).where(Contest.id == 101).values(started_at=datetime(2026, 2, 28, 18))
+        )
+        session.commit()
+
+    run_rating()
+
+    rows = changes()
+    assert rows[(201, 2)].fought_on == date(2026, 6, 1)
+    assert rows[(101, 1)].fought_on == date(2026, 2, 28)
+    # every athlete's history in rating order runs forward in time, so one row holds at a time
+    with Session(engine) as session:
+        for athlete in (1, 2, 3):
+            query = select(RatingChange).where(RatingChange.athlete_id == athlete)
+            history = session.exec(query.order_by(RatingChange.seq)).all()
+            days = [row.fought_on for row in history]
+            assert days == sorted(days)
+
+
+def test_a_contest_without_a_time_counts_after_the_athletes_earlier_ones():
+    add_contests()
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Two days", date_from=date(2026, 9, 18),
+                                date_to=date(2026, 9, 19)))  # fmt: skip
+        session.flush()
+        # rated in this order: 1 v 2 on the 19th, then 1 v 3 with no time (the 18th)
+        session.add(contest(301, 30, blue=1, white=2, winner=1, weight="-73"))
+        session.add(contest(302, 30, blue=1, white=3, winner=1, weight="-73"))
+        session.commit()
+        session.execute(update(Contest).where(Contest.id == 301).values(round=1,
+                        started_at=datetime(2026, 9, 19, 10)))  # fmt: skip
+        session.commit()
+
+    run_rating()
+
+    rows = changes()
+    assert rows[(301, 1)].fought_on == date(2026, 9, 19)
+    assert rows[(302, 1)].fought_on == date(2026, 9, 19)  # not before 1's contest of the 19th
+    assert rows[(301, 1)].next_fought_on == date(2026, 9, 19)
 
 
 def test_open_weight_contest_keeps_the_category():

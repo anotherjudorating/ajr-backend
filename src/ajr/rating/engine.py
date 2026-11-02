@@ -7,7 +7,7 @@ prediction; then both ratings are updated. Every contest counts.
 The defaults were picked with `python -m ajr.rating.tune` (see its docstring).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from sqlalchemy import text
@@ -50,9 +50,20 @@ class ContestOutcome:
 
 
 # Within a competition: by weight, then by round (judobase counts rounds down to
-# the final, which is 0), then by fight number.
+# the final, which is 0), then by fight number. A contest's day is when it started,
+# unless judobase gives a time outside its competition's days (a day's slack either
+# side): then the competition's first day. Contests are rated in the order of their
+# competitions' days, so a contest dated months away from its competition (Gaia
+# European Cup 2023: August, its contests dated June) would put an athlete's
+# history out of order, two rows holding at once.
 CONTESTS_QUERY = text("""
-    select ct.id, coalesce(ct.started_at::date, cm.date_from) as day, ct.weight,
+    select ct.id,
+           case when ct.started_at::date
+                     between cm.date_from - 1 and coalesce(cm.date_to, cm.date_from) + 1
+                then ct.started_at::date
+                else cm.date_from
+           end as day,
+           ct.weight,
            ct.blue_id, ct.white_id, ct.winner_id = ct.blue_id as blue_won,
            coalesce(ct.bye, false) as bye, ct.duration = '00:00:00' as walkover
     from ajr.contest ct
@@ -86,6 +97,16 @@ def run(
     outcomes = []
 
     for contest in contests:
+        # In rating order an athlete's contests run forward in time: a contest dated
+        # before either athlete's previous one (no start time in judobase, so its
+        # competition's first day) counts on that later day.
+        day = max(
+            contest.day,
+            last_day.get(contest.blue_id, contest.day),
+            last_day.get(contest.white_id, contest.day),
+        )
+        if day != contest.day:
+            contest = replace(contest, day=day)
         blue = current_rating(ratings, last_day, contest.blue_id, contest.day, params)
         white = current_rating(ratings, last_day, contest.white_id, contest.day, params)
         blue_score = 1.0 if contest.blue_won else 0.0
