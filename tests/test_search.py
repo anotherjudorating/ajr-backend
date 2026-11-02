@@ -78,3 +78,20 @@ def test_nothing_to_search():
 
     assert search("") == []
     assert search("   ") == []
+
+
+def test_search_athletes_puts_the_weight_picked_first():
+    add_data()
+    add_moves()  # -73: 1, 2, 3, 4 (back) and 6 (moved); -81: 7; 5 is hidden
+
+    def ids(weight: str | None) -> list[int]:
+        rows = call("select * from api.search_athletes('name', :weight, 8)", weight=weight)
+        return [row["id"] for row in rows]
+
+    board_73 = [row["athlete_id"] for row in call("select * from api.leaderboard('-73')")]
+    board_81 = [row["athlete_id"] for row in call("select * from api.leaderboard('-81')")]
+    found = ids("-81")
+    assert found[: len(board_81)] == board_81  # the weight's table first, by place
+    assert set(found) >= set(board_73)  # every athlete can be found
+    assert ids("-73")[: len(board_73)] == board_73
+    assert call("select * from api.search_athletes('', null, 8)") == []
