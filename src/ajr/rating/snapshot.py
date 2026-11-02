@@ -9,7 +9,8 @@ when no result changed: names, IJF places or the day may have) into
 ajr.leaderboard_snapshot, and api.leaderboard serves them from there.
 
 Likewise today's nations rankings (ajr.nation_snapshot, for the country page),
-ranked as api.teams ranks them but from the tables just built; and the Explore
+ranked as api.teams ranks them but from the tables just built; every nation's
+medals at every tournament (ajr.nation_competition, for the same page); and the Explore
 lists: ajr.competition_stats (per tournament: real fights, how often the favourite
 won, upsets) and ajr.athlete_summary (per athlete: the weight, the latest contest
 and tournament, today's place and score).
@@ -97,6 +98,47 @@ NATION_SNAPSHOT = text("""
 """)
 
 
+# Per nation and tournament (individual ones): its athletes and their medals. How an
+# athlete ended a tournament: their last contest there (judobase counts the rounds
+# down to the final, 0), labelled only in brackets with one final.
+NATION_COMPETITION = text("""
+    insert into ajr.nation_competition
+        (country_id, competition_id, athletes, gold, silver, bronze)
+    with ended as (
+        select ct.competition_id, ct.weight, rc.athlete_id,
+               (array_agg(ct.round_name order by ct.round nulls last, ct.fight_no desc))[1]
+                   as last_round,
+               (array_agg(rc.won order by ct.round nulls last, ct.fight_no desc))[1] as last_won
+        from ajr.rating_change rc
+        join ajr.contest ct on ct.id = rc.contest_id
+        join ajr.competition cm on cm.id = ct.competition_id
+        where not coalesce(cm.is_teams, false)
+        group by ct.competition_id, ct.weight, rc.athlete_id
+    ),
+    one_final as (
+        select competition_id, weight
+        from ajr.contest
+        group by competition_id, weight
+        having count(*) filter (where round_name = 'Final') = 1
+    ),
+    results as (
+        select a.country_id, e.competition_id, e.athlete_id,
+               case when o.weight is not null
+                    then ajr.result_label(e.last_round, e.last_won) end as result
+        from ended e
+        join ajr.athlete a on a.id = e.athlete_id
+        left join one_final o on o.competition_id = e.competition_id and o.weight = e.weight
+        where a.country_id is not null
+    )
+    select country_id, competition_id, count(distinct athlete_id),
+           count(*) filter (where result = 'gold'),
+           count(*) filter (where result = 'silver'),
+           count(*) filter (where result = 'bronze')
+    from results
+    group by country_id, competition_id
+""")
+
+
 def refresh_snapshot(session: Session) -> None:
     """Replace today's tables, nations rankings and the Explore summaries (in the
     caller's transaction, so the site never sees them empty)."""
@@ -105,6 +147,9 @@ def refresh_snapshot(session: Session) -> None:
     logger.info("Leaderboard snapshot: %d rows", rows)
     session.execute(text("delete from ajr.nation_snapshot"))
     session.execute(NATION_SNAPSHOT, {"men": WEIGHTS[:7], "women": WEIGHTS[7:]})
+    session.execute(text("delete from ajr.nation_competition"))
+    rows = session.execute(NATION_COMPETITION).rowcount
+    logger.info("Nation competitions: %d rows", rows)
     session.execute(text("delete from ajr.competition_stats"))
     session.execute(COMPETITION_STATS)
     session.execute(text("delete from ajr.athlete_summary"))
