@@ -18,6 +18,8 @@ rating_change up to date:
 
 Either way the rows are replaced in one transaction, so the site never sees a
 half-written history, and both ways give the same rows (tests/test_rating_job.py).
+Before it commits, a run checks what it leaves (check_rating): a failed check rolls
+it back and fails the job.
 """
 
 import logging
@@ -60,14 +62,61 @@ def run_rating(
                 logger.info("No results changed since the last rating run")
                 # the rating is the same, but names, IJF places or the day may not be
                 refresh_snapshot(session)
+                check_rating(session)
                 session.commit()
                 return
             rate_since(session, since, params)
             refresh_contest_list(session, since.year)
         session.merge(settings(params, ranking))
         refresh_snapshot(session)
+        check_rating(session)
         session.commit()
     logger.info("Rating saved")
+
+
+class RatingCheckError(RuntimeError):
+    """The run left the rating inconsistent: it is rolled back, the site keeps the last."""
+
+
+# What every run must leave, checked before it commits (two passes over the history,
+# well under a second on a copy of production).
+CONTEST_CHECK = text("""
+    select count(*) from (
+        select contest_id from ajr.rating_change group by contest_id having count(*) <> 2
+    ) wrong
+""")
+ATHLETE_CHECK = text("""
+    select count(*) filter (where latest <> 1) as without_one_latest,
+           count(*) filter (where backwards) as out_of_order,
+           count(*) as athletes,
+           (select count(*) from ajr.athlete_summary) as summaries
+    from (
+        select athlete_id,
+               count(*) filter (where next_fought_on = date '9999-12-31') as latest,
+               bool_or(next_fought_on < fought_on) as backwards
+        from ajr.rating_change
+        group by athlete_id
+    ) a
+""")
+
+
+def check_rating(session: Session) -> None:
+    """Every contest has two rows, every athlete one latest row and a history in time
+    order, and the Explore summary has every rated athlete."""
+    problems = []
+    if contests := session.execute(CONTEST_CHECK).scalar_one():
+        problems.append(f"{contests} contests without exactly two rating rows")
+    athletes = session.execute(ATHLETE_CHECK).one()
+    if athletes.without_one_latest:
+        problems.append(f"{athletes.without_one_latest} athletes without exactly one latest row")
+    if athletes.out_of_order:
+        problems.append(f"{athletes.out_of_order} athletes whose history is out of time order")
+    if athletes.summaries != athletes.athletes:
+        problems.append(
+            f"athlete_summary has {athletes.summaries} rows for {athletes.athletes} rated athletes"
+        )
+    if problems:
+        raise RatingCheckError("; ".join(problems))
 
 
 def settings(params: RatingParams, ranking: RankingParams) -> RatingSettings:

@@ -19,7 +19,7 @@ from ajr.core.models import (
 )
 from ajr.rating.__main__ import main
 from ajr.rating.engine import RatingParams
-from ajr.rating.job import LATEST, run_rating
+from ajr.rating.job import LATEST, RatingCheckError, run_rating
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -308,3 +308,29 @@ def test_empty_rating_table_rates_everything():
     rate()
 
     assert len(changes()) == 6
+
+
+# --- checks before commit ----------------------------------------------------
+
+
+def test_an_inconsistent_history_fails_the_run_and_keeps_the_last_rating():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        # athlete 1's next contest before this one, as a bug in the dates would leave it
+        session.execute(
+            update(RatingChange)
+            .where(RatingChange.contest_id == 101, RatingChange.athlete_id == 1)
+            .values(next_fought_on=date(2026, 1, 1))
+        )
+        session.commit()
+    before = without_seq(changes())
+
+    with pytest.raises(RatingCheckError, match="1 athletes whose history is out of time order"):
+        rate()
+
+    assert without_seq(changes()) == before
+    with Session(engine) as session:
+        last = session.exec(select(JobRun).order_by(JobRun.id.desc())).first()
+    assert last.status == "failed"
+    assert "RatingCheckError" in last.error
