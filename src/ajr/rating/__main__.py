@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 
 from ajr.core.job_run import job_run
 from ajr.rating.job import run_rating
@@ -16,7 +17,11 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with job_run("rating_full" if args.full else "rating"):
-        run_rating(full=args.full)
+        changed = run_rating(full=args.full)
+    # For the update workflow: whether to tell the site to refresh its cache.
+    if output := os.environ.get("GITHUB_OUTPUT"):
+        with open(output, "a") as file:
+            file.write(f"changed={'true' if changed else 'false'}\n")
 
 
 if __name__ == "__main__":

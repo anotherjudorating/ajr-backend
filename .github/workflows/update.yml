@@ -5,6 +5,8 @@ name: Update data
 # Nightly the rating is recomputed from scratch as a safety net, then the records
 # (by hand: the `records` option).
 # Each step logs itself in the job_run table; a failed step stops the rest.
+# When a run changed what the site shows, the site is told to refresh its cache
+# (POST /api/revalidate): it keeps everything cached until then.
 # It runs the code of the latest release, whose migrations the release workflow
 # (release.yml) has applied: what is merged into main waits for the next release.
 on:
@@ -48,7 +50,13 @@ jobs:
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
+        id: rating
         run: uv run python -m ajr.rating ${{ env.FULL_RATING == 'true' && '--full' || '' }}
       - name: Records
         if: env.RECORDS == 'true'
         run: uv run python -m ajr.records
+      - name: Refresh the site
+        if: steps.rating.outputs.changed == 'true' || env.RECORDS == 'true'
+        env:
+          REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+        run: .github/refresh-site.sh
