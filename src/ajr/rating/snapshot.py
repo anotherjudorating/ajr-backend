@@ -86,8 +86,11 @@ CONTEST_LIST = text("""
            case when ct.winner_id = ct.white_id then w.win_probability else b.win_probability end
     from ajr.competition cm
     join ajr.contest ct on ct.competition_id = cm.id
-    join ajr.rating_change w on w.contest_id = ct.id and w.athlete_id = ct.white_id
-    join ajr.rating_change b on b.contest_id = ct.id and b.athlete_id = ct.blue_id
+    -- A contest has two rows, one per athlete: "not the other one" picks the same row,
+    -- and the planner estimates it right (two equalities together it multiplies into
+    -- one row of the 200 thousand, and loops over them for minutes).
+    join ajr.rating_change w on w.contest_id = ct.id and w.athlete_id <> ct.blue_id
+    join ajr.rating_change b on b.contest_id = ct.id and b.athlete_id <> ct.white_id
     join ajr.athlete wa on wa.id = ct.white_id
     left join ajr.country wc on wc.id = wa.country_id
     join ajr.athlete ba on ba.id = ct.blue_id

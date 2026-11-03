@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 PARAMS = RatingParams()
 RANKING = RankingParams()
 LATEST = date(9999, 12, 31)  # next_fought_on of an athlete's latest contest
-JOB_STATEMENT_TIMEOUT = "15min"
 COLUMNS = [
     "contest_id", "athlete_id", "seq", "opponent_id", "fought_on", "next_fought_on",
     "weight", "won", "win_probability",
@@ -52,10 +51,6 @@ def run_rating(
     full: bool = False, params: RatingParams = PARAMS, ranking: RankingParams = RANKING
 ) -> None:
     with Session(engine) as session:
-        # The run is one transaction of long statements (a full run rewrites the whole
-        # history, then builds the lists from it): not bound by the connection's
-        # timeout, which is the site's (2 minutes through the pooler).
-        session.execute(text(f"set local statement_timeout = '{JOB_STATEMENT_TIMEOUT}'"))
         if full or needs_full_run(session, params, ranking):
             rate_everything(session, params)
             refresh_contest_list(session, None)
