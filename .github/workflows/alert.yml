@@ -1,0 +1,38 @@
+name: Alert
+
+# A failed run of a production workflow opens an issue "<workflow> is failing" (a
+# later failure comments on it), so the failure reaches whoever watches the
+# repository; the next successful run closes it. Cancelled runs (one waiting for
+# another under the same concurrency group) are neither.
+on:
+  workflow_run:
+    workflows: [Update data, Release, Backup]
+    types: [completed]
+
+permissions:
+  issues: write
+
+jobs:
+  alert:
+    if: contains(fromJSON('["failure", "timed_out", "success"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: ${{ github.event.workflow_run.name }} is failing
+      RUN: ${{ github.event.workflow_run.html_url }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - name: Open, comment or close the issue
+        run: |
+          issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
+                  --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ "$CONCLUSION" = success ]; then
+            [ -z "$issue" ] || gh issue close "$issue" --comment "Passed again: $RUN"
+          elif [ -z "$issue" ]; then
+            gh issue create --title "$TITLE" \
+              --body "The run $RUN ended: $CONCLUSION. Its log says which step; the step's error is also in the job_run table."
+          else
+            gh issue comment "$issue" --body "Again: $RUN ($CONCLUSION)"
+          fi
