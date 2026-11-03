@@ -31,3 +31,7 @@ jobs:
         run: uv run alembic upgrade head
       - name: Rating
         run: uv run python -m ajr.rating
+      - name: Refresh the site # the release may change what the API answers
+        env:
+          REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+        run: .github/refresh-site.sh

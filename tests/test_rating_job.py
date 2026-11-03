@@ -334,3 +334,35 @@ def test_an_inconsistent_history_fails_the_run_and_keeps_the_last_rating():
         last = session.exec(select(JobRun).order_by(JobRun.id.desc())).first()
     assert last.status == "failed"
     assert "RatingCheckError" in last.error
+
+
+# --- telling the site to refresh ---------------------------------------------
+
+
+def rate_and_tell() -> bool:
+    with job_run("rating"):
+        return run_rating()
+
+
+def test_a_run_says_whether_the_site_may_have_changed():
+    add_contests()
+    assert rate_and_tell() is True  # the first rating
+
+    assert rate_and_tell() is False  # nothing new, the same day, no draw
+
+    with Session(engine) as session:
+        session.execute(update(Contest).where(Contest.id == 101).values(winner_id=2))
+        session.commit()
+    mark_changed(10)
+    assert rate_and_tell() is True
+
+
+def test_the_command_line_writes_the_answer_for_the_workflow(tmp_path, monkeypatch):
+    add_contests()
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    main([])
+    main([])
+
+    assert output.read_text() == "changed=true\nchanged=false\n"

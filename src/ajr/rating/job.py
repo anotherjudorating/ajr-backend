@@ -51,7 +51,9 @@ COLUMNS = [
 
 def run_rating(
     full: bool = False, params: RatingParams = PARAMS, ranking: RankingParams = RANKING
-) -> None:
+) -> bool:
+    """Whether what the site shows may have changed: the site is then told to refresh
+    (python -m ajr.rating writes it for the update workflow)."""
     with Session(engine) as session:
         if full or needs_full_run(session, params, ranking):
             rate_everything(session, params)
@@ -61,10 +63,11 @@ def run_rating(
             if since is None:
                 logger.info("No results changed since the last rating run")
                 # the rating is the same, but names, IJF places or the day may not be
+                before = site_visible_state(session)
                 refresh_snapshot(session)
                 check_rating(session)
                 session.commit()
-                return
+                return site_visible_state(session) != before
             rate_since(session, since, params)
             refresh_contest_list(session, since.year)
         session.merge(settings(params, ranking))
@@ -72,6 +75,24 @@ def run_rating(
         check_rating(session)
         session.commit()
     logger.info("Rating saved")
+    return True
+
+
+# What a run without new results can still change on the site: the day of today's
+# tables (a new day: who drops out, the 90-day changes, names and IJF places, which
+# the sync updates) and the medal chances (a draw published). Small tables.
+STATE_DAY = text("select max(day) from ajr.leaderboard_snapshot")
+STATE_CHANCES = text("""
+    select competition_id, weight, athlete_id, gold, medal from ajr.medal_chance
+    order by competition_id, weight, athlete_id
+""")
+
+
+def site_visible_state(session: Session) -> tuple:
+    return (
+        session.execute(STATE_DAY).scalar(),
+        [tuple(row) for row in session.execute(STATE_CHANCES)],
+    )
 
 
 class RatingCheckError(RuntimeError):
