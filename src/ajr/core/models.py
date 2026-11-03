@@ -290,3 +290,10 @@ class AthleteSummary(SQLModel, table=True):
     contests: int
     place: int | None = None  # today, in the weight's table
     score: int | None = None
+    # the athlete's, kept here so the Explore list reads one table
+    family_name: str | None = None
+    given_name: str | None = None
+    gender: str | None = None
+    country: str | None = None  # IOC
+    birth_year: int | None = None
+    last_competition: str | None = None

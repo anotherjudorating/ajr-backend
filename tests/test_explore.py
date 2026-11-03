@@ -1,13 +1,15 @@
 """The Explore lists: api.competitions, api.contests, api.athletes, api.nations."""
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import update
 from sqlmodel import Session
 
 from ajr.core.db import engine
-from ajr.core.models import Athlete, Competition
+from ajr.core.job_run import job_run
+from ajr.core.models import Athlete, Competition, Contest
+from ajr.rating.job import run_rating
 from tests.test_api import add_data, add_moves, call, refresh
 
 pytestmark = pytest.mark.usefixtures("clean_db")
@@ -108,3 +110,28 @@ def test_nations():
 
     assert (japan["country"], japan["athletes"]) == ("JPN", 5)
     assert japan["active"] == 3  # 4 and 5 are hidden
+
+
+def test_contest_list_follows_a_new_competition():
+    add_data()  # a contest this year and one two years ago
+    with Session(engine) as session:
+        session.add(Competition(id=60, name="New Open", date_from=TODAY - timedelta(days=2)))
+        session.flush()
+        session.add(Contest(id=601, competition_id=60, blue_id=2, white_id=3, winner_id=2,
+                            weight="-73", round=0, round_name="Final"))  # fmt: skip
+        session.execute(
+            update(Competition)
+            .where(Competition.id == 60)
+            .values(results_changed_at=datetime.now(UTC))
+        )
+        session.commit()
+    with job_run("rating"):
+        run_rating()  # from the new competition on, not from the start
+
+    this_year = {
+        row["contest_id"] for row in call("select * from api.contests(:year)", year=TODAY.year)
+    }
+    old_year = (TODAY - timedelta(days=730)).year
+    before = {row["contest_id"] for row in call("select * from api.contests(:year)", year=old_year)}
+    assert 601 in this_year and {101, 102} <= this_year
+    assert 201 in before
