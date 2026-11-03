@@ -1,0 +1,18 @@
+# Weekly pull requests for outdated dependencies and GitHub Actions (security fixes
+# come as soon as they are published). Each still has to pass the tests.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

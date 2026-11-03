@@ -26,6 +26,9 @@ concurrency:
   group: update-data
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   update:
     runs-on: ubuntu-latest

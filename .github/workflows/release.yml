@@ -12,6 +12,9 @@ concurrency:
   group: update-data # never at the same time as the update job
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
