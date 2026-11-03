@@ -8,6 +8,9 @@ the 3-second limit. So the rating job builds today's tables on every run (also
 when no result changed: names, IJF places or the day may have) into
 ajr.leaderboard_snapshot, and api.leaderboard serves them from there.
 
+The contest list of the Explore pages (ajr.contest_list) is rebuilt by the rating
+run for the years it changed (refresh_contest_list), not on every run.
+
 Likewise today's pound-for-pound and nations tables (ajr.p4p_snapshot,
 ajr.teams_snapshot), which api.p4p and api.teams serve; the nations' places and
 ratings for the country page (ajr.nation_snapshot) and every nation's medals at
@@ -53,17 +56,60 @@ COMPETITION_STATS = text("""
 
 ATHLETE_SUMMARY = text("""
     insert into ajr.athlete_summary
-        (athlete_id, weight, last_contest, last_competition_id, contests, place, score)
+        (athlete_id, weight, last_contest, last_competition_id, contests, place, score,
+         family_name, given_name, gender, country, birth_year, last_competition)
     select rc.athlete_id, rc.weight, rc.fought_on, ct.competition_id, counted.contests,
-           snapshot.place, snapshot.score
+           snapshot.place, snapshot.score,
+           a.family_name, a.given_name, a.gender, co.ioc, a.dob_year, cm.name
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
+    join ajr.competition cm on cm.id = ct.competition_id
+    join ajr.athlete a on a.id = rc.athlete_id
+    left join ajr.country co on co.id = a.country_id
     join (
         select athlete_id, count(*) as contests from ajr.rating_change group by athlete_id
     ) counted on counted.athlete_id = rc.athlete_id
     left join ajr.leaderboard_snapshot snapshot on snapshot.athlete_id = rc.athlete_id
     where rc.next_fought_on = date '9999-12-31'
 """)
+
+# Every real fight (no byes, no 0:00 walkovers) of the competitions from a year on,
+# both athletes with their chance and rating change, as api.contests lists them.
+CONTEST_LIST = text("""
+    insert into ajr.contest_list
+    select ct.id, ct.competition_id, cm.name, extract(year from cm.date_from)::integer,
+           w.fought_on, ct.weight, ct.round_name, ct.round, ct.fight_no, ct.winner_id,
+           ct.white_id, wa.family_name, wa.given_name, wc.ioc, w.win_probability,
+           round(w.rating_after - w.rating_before)::integer,
+           ct.blue_id, ba.family_name, ba.given_name, bc.ioc, b.win_probability,
+           round(b.rating_after - b.rating_before)::integer,
+           case when ct.winner_id = ct.white_id then w.win_probability else b.win_probability end
+    from ajr.competition cm
+    join ajr.contest ct on ct.competition_id = cm.id
+    join ajr.rating_change w on w.contest_id = ct.id and w.athlete_id = ct.white_id
+    join ajr.rating_change b on b.contest_id = ct.id and b.athlete_id = ct.blue_id
+    join ajr.athlete wa on wa.id = ct.white_id
+    left join ajr.country wc on wc.id = wa.country_id
+    join ajr.athlete ba on ba.id = ct.blue_id
+    left join ajr.country bc on bc.id = ba.country_id
+    where not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
+      and (cast(:since as integer) is null
+           or cm.date_from >= make_date(cast(:since as integer), 1, 1))
+""")
+CONTEST_LIST_DELETE = text("""
+    delete from ajr.contest_list where cast(:since as integer) is null or year >= :since
+""")
+IS_EMPTY = text("select not exists (select from ajr.contest_list)")
+
+
+def refresh_contest_list(session: Session, since: int | None) -> None:
+    """Rebuild the contest list from the year `since` on (all with None): the rating
+    rows of those years are new. An empty list (a fresh database) is built whole."""
+    if since is not None and session.execute(IS_EMPTY).scalar():
+        since = None
+    session.execute(CONTEST_LIST_DELETE, {"since": since})
+    rows = session.execute(CONTEST_LIST, {"since": since}).rowcount
+    logger.info("Contest list from %s: %d rows", since or "the start", rows)
 
 
 # A nation's rating: the average score of its best athlete in every weight of the

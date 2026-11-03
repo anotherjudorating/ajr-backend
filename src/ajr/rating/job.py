@@ -32,7 +32,7 @@ from ajr.core.models import Competition, JobRun, RatingChange, RatingSettings
 from ajr.rating.engine import ContestOutcome, RatingParams, load_contests, run
 from ajr.rating.glicko2 import Rating
 from ajr.rating.ranking import WEIGHTS, RankingParams
-from ajr.rating.snapshot import refresh_snapshot
+from ajr.rating.snapshot import refresh_contest_list, refresh_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ def run_rating(
     with Session(engine) as session:
         if full or needs_full_run(session, params, ranking):
             rate_everything(session, params)
+            refresh_contest_list(session, None)
         else:
             since = first_changed_competition_day(session)
             if since is None:
@@ -62,6 +63,7 @@ def run_rating(
                 session.commit()
                 return
             rate_since(session, since, params)
+            refresh_contest_list(session, since.year)
         session.merge(settings(params, ranking))
         refresh_snapshot(session)
         session.commit()
