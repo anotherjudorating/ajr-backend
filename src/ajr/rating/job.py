@@ -116,6 +116,8 @@ def rate_everything(session: Session, params: RatingParams) -> None:
     logger.info("Full run: %d rating changes from %d contests", len(rows), len(contests))
     session.execute(delete(RatingChange))
     copy_rows(session, rows)
+    # the planner's statistics of the new rows, for the lists built from them next
+    session.execute(text("analyze ajr.rating_change"))
 
 
 # The rows from the first competition starting on `since` on (they all come after
