@@ -171,14 +171,24 @@ def test_a_table_whose_columns_changed_is_sent_whole(connections):
 
 def test_production_keeps_its_own_tables(connections):
     local, remote = connections
-    remote.execute(
-        "insert into ajr.job_run (type, status, started_at) values ('sync', 'success', now())"
-    )
+    add_data()
+    publish(local, remote)
+    remote.execute("insert into ajr.matchup_views (a, b, views) values (1, 2, 5)")
     remote.commit()
+
+    run("update ajr.athlete set given_name = 'Hifumi' where id = 1")
+    publish(local, remote)
+
+    assert rows(remote, "matchup_views") == [(1, 2, 5)]
+
+
+def test_the_runs_log_is_published_with_the_data(connections):
+    local, remote = connections
+    run("insert into ajr.job_run (type, status, started_at) values ('rating', 'success', now())")
 
     publish(local, remote)
 
-    assert len(rows(remote, "job_run")) == 1
+    assert [(r[1], r[2]) for r in rows(remote, "job_run")] == [("rating", "success")]
 
 
 def test_a_different_schema_is_refused(connections):

@@ -30,7 +30,6 @@ SCHEMA = "ajr"
 PUBLISHED = "published"
 NOT_PUBLISHED = {
     "alembic_version",  # migrations run on each database
-    "job_run",  # the jobs log their runs in production directly
     "matchup_views",  # counted by the site's visitors
 }
 

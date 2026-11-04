@@ -1,9 +1,10 @@
 name: Release
 
-# Publishing a release on GitHub deploys it: the database is migrated with the
-# release's code, then the rating runs once, which also rebuilds today's tables
-# for the site. From then on the update job (update.yml) runs this release's code.
-# Merging into main deploys nothing.
+# Publishing a release on GitHub deploys it: production is migrated with the
+# release's code and the site is told to refresh (the API's functions may have
+# changed), then an update run (update.yml) starts with this release's code: it
+# migrates its working copy the same way, recomputes and publishes what changed. From
+# then on every update run uses this release. Merging into main deploys nothing.
 on:
   release:
     types: [published]
@@ -14,6 +15,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write # to start the update run
 
 jobs:
   deploy:
@@ -29,9 +31,12 @@ jobs:
       - run: uv sync --locked
       - name: Migrate
         run: uv run alembic upgrade head
-      - name: Rating
-        run: uv run python -m ajr.rating
       - name: Refresh the site # the release may change what the API answers
         env:
           REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
         run: .github/refresh-site.sh
+      - name: Start an update run
+        # it waits for this workflow to end (same concurrency group)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run update.yml --repo "$GITHUB_REPOSITORY" --ref main

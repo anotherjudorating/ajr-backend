@@ -6,7 +6,7 @@ name: Alert
 # another under the same concurrency group) are neither.
 on:
   workflow_run:
-    workflows: [Update data, Update data (copy), Release, Backup]
+    workflows: [Update data, Release, Backup]
     types: [completed]
 
 permissions:
