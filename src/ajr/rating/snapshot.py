@@ -152,26 +152,23 @@ NATION_SNAPSHOT = text("""
 """)
 
 
-# Per nation and tournament (individual ones): its athletes and their medals. How an
-# athlete ended a tournament: their last contest there (judobase counts the rounds
-# down to the final, 0), labelled only in brackets with one final.
-NATION_COMPETITION = text("""
-    insert into ajr.nation_competition
-        (country_id, competition_id, athletes, gold, silver, bronze)
-    -- An athlete's last contest there; contest id last, so that two contests with the
-    -- same round and number (judobase has a few) always give the same one.
-    with ended as (
-        select ct.competition_id, ct.weight, rc.athlete_id,
-               (array_agg(ct.round_name
-                          order by ct.round nulls last, ct.fight_no desc, ct.id desc))[1]
-                   as last_round,
-               (array_agg(rc.won order by ct.round nulls last, ct.fight_no desc, ct.id desc))[1]
-                   as last_won
+# How each athlete did at each tournament, per weight category of the contests: the
+# result of their last contest (judobase counts the rounds down to the final, 0;
+# labelled only in brackets with one final), their score before and after, contests,
+# wins, and their rated contests before it. Read by the tournament's results and the
+# athlete's history, and summed up per nation below.
+ATHLETE_COMPETITION = text("""
+    insert into ajr.athlete_competition
+    with fights as (
+        select rc.athlete_id, ct.competition_id, ct.weight, ct.id, ct.round, ct.fight_no,
+               ct.round_name, rc.seq, rc.won,
+               rc.rating_before - s.rd_factor * rc.rd_before as score_before,
+               rc.rating_after - s.rd_factor * rc.rd_after as score_after,
+               row_number() over (partition by rc.athlete_id order by rc.seq) - 1 as before
         from ajr.rating_change rc
         join ajr.contest ct on ct.id = rc.contest_id
-        join ajr.competition cm on cm.id = ct.competition_id
-        where not coalesce(cm.is_teams, false)
-        group by ct.competition_id, ct.weight, rc.athlete_id
+        cross join ajr.rating_settings s
+        where ct.weight is not null
     ),
     one_final as (
         select competition_id, weight
@@ -179,23 +176,42 @@ NATION_COMPETITION = text("""
         group by competition_id, weight
         having count(*) filter (where round_name = 'Final') = 1
     ),
-    results as (
-        select a.country_id, e.competition_id, e.athlete_id,
-               case when o.weight is not null
-                    then ajr.result_label(e.last_round, e.last_won) end as result
-        from ended e
-        join ajr.athlete a on a.id = e.athlete_id
-        left join one_final o on o.competition_id = e.competition_id and o.weight = e.weight
-        where a.country_id is not null
+    by_athlete as (
+        select athlete_id, competition_id, weight,
+               (array_agg(score_before order by seq))[1] as score_before,
+               (array_agg(score_after order by seq desc))[1] as score_after,
+               -- the last contest: the latest round (judobase counts down to the final,
+               -- 0), the contest id when two have the same round and number
+               (array_agg(round_name order by round nulls last, fight_no desc, id desc))[1]
+                   as last_round,
+               (array_agg(won order by round nulls last, fight_no desc, id desc))[1] as last_won,
+               count(*) as contests,
+               count(*) filter (where won) as wins,
+               min(before) as contests_before
+        from fights
+        group by athlete_id, competition_id, weight
     )
-    select country_id, competition_id, count(distinct athlete_id),
-           count(*) filter (where result = 'gold'),
-           count(*) filter (where result = 'silver'),
-           count(*) filter (where result = 'bronze')
-    from results
-    group by country_id, competition_id
+    select b.athlete_id, b.competition_id, b.weight,
+           case when o.weight is not null then ajr.result_label(b.last_round, b.last_won) end,
+           round(b.score_before), round(b.score_after), b.contests, b.wins, b.contests_before
+    from by_athlete b
+    left join one_final o on o.competition_id = b.competition_id and o.weight = b.weight
 """)
 
+# Per nation and tournament (individual ones): its athletes and their medals.
+NATION_COMPETITION = text("""
+    insert into ajr.nation_competition
+        (country_id, competition_id, athletes, gold, silver, bronze)
+    select a.country_id, r.competition_id, count(distinct r.athlete_id),
+           count(*) filter (where r.result = 'gold'),
+           count(*) filter (where r.result = 'silver'),
+           count(*) filter (where r.result = 'bronze')
+    from ajr.athlete_competition r
+    join ajr.athlete a on a.id = r.athlete_id
+    join ajr.competition cm on cm.id = r.competition_id
+    where a.country_id is not null and not coalesce(cm.is_teams, false)
+    group by a.country_id, r.competition_id
+""")
 
 # Today's pound-for-pound and nations tables, as api.p4p and api.teams serve them.
 P4P_SNAPSHOT = text("""
@@ -224,6 +240,9 @@ def refresh_snapshot(session: Session) -> None:
     session.execute(TEAMS_SNAPSHOT)
     session.execute(text("delete from ajr.nation_snapshot"))
     session.execute(NATION_SNAPSHOT, {"men": WEIGHTS[:7], "women": WEIGHTS[7:]})
+    session.execute(text("delete from ajr.athlete_competition"))
+    rows = session.execute(ATHLETE_COMPETITION).rowcount
+    logger.info("Athlete competitions: %d rows", rows)
     session.execute(text("delete from ajr.nation_competition"))
     rows = session.execute(NATION_COMPETITION).rowcount
     logger.info("Nation competitions: %d rows", rows)
