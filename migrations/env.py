@@ -10,7 +10,8 @@ from ajr.core.models import SCHEMA
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # keep the loggers already set up (migrating from a running program or the tests)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 def only_our_schema(name, type_, parent_names):
@@ -20,7 +21,7 @@ def only_our_schema(name, type_, parent_names):
     return True
 
 
-with engine.connect() as connection:
+def run_migrations(connection) -> None:
     # Alembic keeps its version table in our schema, so the schema must exist first.
     connection.execute(text(f"create schema if not exists {SCHEMA}"))
     connection.commit()
@@ -35,3 +36,12 @@ with engine.connect() as connection:
     )
     with context.begin_transaction():
         context.run_migrations()
+
+
+# DATABASE_URL's database, or a connection given in the config's attributes (another
+# database: the tests' copy of production for publishing).
+if (given := config.attributes.get("connection")) is not None:
+    run_migrations(given)
+else:
+    with engine.connect() as connection:
+        run_migrations(connection)
