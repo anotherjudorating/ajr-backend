@@ -11,7 +11,7 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 | Workflow | When | Steps |
 |---|---|---|
 | `release.yml` | a release published on GitHub | `alembic upgrade head` on production with the release's code, the site refreshed, then an update run |
-| `update.yml` | by hand or an outside scheduler (`workflow_dispatch`); nightly with a full rating | with the latest release's code, on a working copy: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` → `python -m ajr.publish publish` → nightly `check` |
+| `update.yml` | every 15 minutes and nightly (02:40 UTC, with a full rating), started by a Cloudflare Worker (`cloudflare/`); or by hand | with the latest release's code, on a working copy: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` → `python -m ajr.publish publish` → nightly `check` |
 | `alert.yml` | a run of the above failed | opens (or comments on) an issue "<workflow> is failing"; the next success closes it |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |

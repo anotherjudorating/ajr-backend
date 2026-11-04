@@ -1,0 +1,11 @@
+# The Worker that starts the update workflow on schedule (worker.js).
+name = "ajr-update-trigger"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = false # no URL: it only runs on schedule
+
+[vars]
+GITHUB_REPO = "anotherjudorating/ajr-backend"
+
+[triggers]
+crons = ["*/15 * * * *", "40 2 * * *"]
