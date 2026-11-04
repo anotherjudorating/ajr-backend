@@ -228,3 +228,6 @@ __marimo__/
 
 # macOS
 .DS_Store
+
+# the update job's working copy (.github/working-copy.sh)
+*.dump

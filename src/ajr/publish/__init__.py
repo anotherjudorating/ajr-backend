@@ -225,10 +225,11 @@ def adopt(local: Connection) -> None:
     local.commit()
 
 
-def publish(local: Connection, remote: Connection) -> list[Change]:
+def publish(local: Connection, remote: Connection, dry_run: bool = False) -> list[Change]:
     """Send what changed in the working copy (`local`) to production (`remote`) in
     one transaction, then remember it in the working copy. Both connections must not
-    be in autocommit mode; both are committed here."""
+    be in autocommit mode; both are committed here. A dry run does it all on
+    production, then rolls back and remembers nothing: what would be sent."""
     tables = published_tables(local)
     remote_tables = {table.name: table for table in published_tables(remote)}
     for table in tables:
@@ -248,13 +249,47 @@ def publish(local: Connection, remote: Connection) -> list[Change]:
         Change(each.table.name, each.upserted, deleted[each.table.name], each.whole)
         for each in staged
     ]
-    remote.commit()
-    remember(local, tables, changes)
-    local.commit()
+    if dry_run:
+        remote.rollback()
+        local.rollback()
+    else:
+        remote.commit()
+        remember(local, tables, changes)
+        local.commit()
     for change in changes:
         if change.whole or change.upserted or change.deleted:
             logger.info(
-                "Published %s: %d upserted, %d deleted%s", change.table, change.upserted,
-                change.deleted, " (whole table)" if change.whole else "",
+                "%s %s: %d upserted, %d deleted%s", "Would publish" if dry_run else "Published",
+                change.table, change.upserted, change.deleted,
+                " (whole table)" if change.whole else "",
             )  # fmt: skip
     return changes
+
+
+# Per table: its rows and a sum of their hashes, which does not depend on their
+# order (so no sort). Floats in full, whatever the connection's setting.
+CHECK_QUERY = "select count(*), coalesce(sum(hashtextextended(t::text, 0)), 0) from {} t"
+
+
+@dataclass(frozen=True)
+class Difference:
+    table: str
+    local_rows: int
+    remote_rows: int
+
+
+def check(local: Connection, remote: Connection) -> list[Difference]:
+    """The tables whose rows differ between the working copy and production. Reads
+    every published table on both: a full pass over production's tables."""
+    differences = []
+    for connection in (local, remote):
+        connection.execute("set extra_float_digits = 3")
+    for table in published_tables(local):
+        query = sql.SQL(CHECK_QUERY).format(sql.Identifier(SCHEMA, table.name))
+        ours = local.execute(query).fetchone()
+        theirs = remote.execute(query).fetchone()
+        if ours != theirs:
+            differences.append(Difference(table.name, ours[0], theirs[0]))
+    local.rollback()
+    remote.rollback()
+    return differences

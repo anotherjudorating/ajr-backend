@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Competition, Contest, Country
-from ajr.publish import NOT_PUBLISHED, Change, publish, published_tables
+from ajr.publish import NOT_PUBLISHED, Change, check, publish, published_tables
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -192,3 +192,28 @@ def test_a_different_schema_is_refused(connections):
     remote.rollback()
     remote.execute("alter table ajr.athlete drop column extra")
     remote.commit()
+
+
+def test_a_dry_run_writes_nothing_and_remembers_nothing(connections):
+    local, remote = connections
+    add_data()
+    publish(local, remote)
+    run("update ajr.athlete set given_name = 'Hifumi' where id = 1")
+
+    assert changed(publish(local, remote, dry_run=True)) == {"athlete": (1, 0)}
+
+    assert rows(remote, "athlete")[0][2] is None  # production still has the old name
+    assert changed(publish(local, remote)) == {"athlete": (1, 0)}  # sent for real now
+    assert_same(local, remote)
+
+
+def test_check_finds_the_tables_that_differ(connections):
+    local, remote = connections
+    add_data()
+    publish(local, remote)
+    assert check(local, remote) == []
+
+    remote.execute("update ajr.contest set winner_id = 2 where id = 101")
+    remote.commit()
+
+    assert [d.table for d in check(local, remote)] == ["contest"]
