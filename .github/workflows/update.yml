@@ -1,9 +1,10 @@
 name: Update data
 
 # Each run: new data from judobase, the rating from the first competition whose
-# results changed, today's tables; nightly the rating from scratch (a safety net),
-# the records, and a comparison of every table with production. Started by hand or
-# by an outside scheduler (workflow_dispatch), and nightly by GitHub's cron.
+# results changed, today's tables. Started by hand or by the Cloudflare Worker
+# (cloudflare/worker.js): every 15 minutes, and nightly with `full`, `records` and
+# `check` (the rating from scratch as a safety net, the records, a comparison of
+# every table with production). GitHub's own schedule fired only a few times a day.
 #
 # All of it on a working copy of production, so that production does none of the
 # work (python -m ajr.publish): a Postgres here, restored from the previous run's
@@ -13,8 +14,6 @@ name: Update data
 # It runs the code of the latest release, whose migrations the release workflow
 # (release.yml) has applied to production; this run applies them to the copy.
 on:
-  schedule:
-    - cron: "40 2 * * *" # nightly: full rating, records, comparison (02:40 UTC)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -55,7 +54,6 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
       PRODUCTION_DATABASE_URL: ${{ secrets.DATABASE_URL }}
       COPY: working-copy.dump
-      NIGHTLY: ${{ github.event.schedule == '40 2 * * *' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -97,9 +95,9 @@ jobs:
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
-        run: uv run python -m ajr.rating ${{ (inputs.full || env.NIGHTLY == 'true') && '--full' || '' }}
+        run: uv run python -m ajr.rating ${{ inputs.full && '--full' || '' }}
       - name: Records
-        if: inputs.records || env.NIGHTLY == 'true'
+        if: inputs.records
         run: uv run python -m ajr.records
 
       - name: Publish
@@ -132,5 +130,5 @@ jobs:
 
       # last: a difference fails the run (an issue is opened), the copy is saved
       - name: Compare with production
-        if: inputs.check || env.NIGHTLY == 'true'
+        if: inputs.check
         run: uv run python -m ajr.publish check
