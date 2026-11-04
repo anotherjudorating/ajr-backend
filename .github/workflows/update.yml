@@ -57,7 +57,7 @@ jobs:
       COPY: working-copy.dump
       NIGHTLY: ${{ github.event.schedule == '40 2 * * *' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the tags too
       - name: Use the latest release
@@ -65,7 +65,7 @@ jobs:
           git checkout "$(git describe --tags --abbrev=0)"
           # this workflow's scripts as on main (the release may predate them)
           git checkout "$GITHUB_SHA" -- .github/working-copy.sh .github/refresh-site.sh
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked
 
       - name: Postgres for the copy
@@ -81,7 +81,7 @@ jobs:
       - name: The previous copy
         id: cache
         if: ${{ !inputs.fresh }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.COPY }}
           key: working-copy-${{ github.run_id }}
@@ -116,7 +116,7 @@ jobs:
       - name: Save the copy
         if: always() && steps.restore.outcome == 'success'
         run: .github/working-copy.sh dump
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: always() && steps.restore.outcome == 'success'
         with:
           path: ${{ env.COPY }}
