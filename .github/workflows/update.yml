@@ -1,26 +1,40 @@
 name: Update data
 
-# Every 15 minutes: new data from judobase, then the rating recomputed from the
-# first competition whose results changed (nothing changed: nothing to do).
-# Nightly the rating is recomputed from scratch as a safety net, then the records
-# (by hand: the `records` option).
-# Each step logs itself in the job_run table; a failed step stops the rest.
-# When a run changed what the site shows, the site is told to refresh its cache
-# (POST /api/revalidate): it keeps everything cached until then.
+# Each run: new data from judobase, the rating from the first competition whose
+# results changed, today's tables; nightly the rating from scratch (a safety net),
+# the records, and a comparison of every table with production. Started by hand or
+# by an outside scheduler (workflow_dispatch), and nightly by GitHub's cron.
+#
+# All of it on a working copy of production, so that production does none of the
+# work (python -m ajr.publish): a Postgres here, restored from the previous run's
+# copy (Actions cache) or, without one, from production; then only the rows that
+# differ go to production, in one transaction, and the site is told to refresh if
+# any did. Each step logs itself in the copy's job_run, published with the rest.
 # It runs the code of the latest release, whose migrations the release workflow
-# (release.yml) has applied: what is merged into main waits for the next release.
+# (release.yml) has applied to production; this run applies them to the copy.
 on:
   schedule:
-    - cron: "*/15 * * * *"
-    - cron: "40 2 * * *" # nightly full rating (02:40 UTC)
+    - cron: "40 2 * * *" # nightly: full rating, records, comparison (02:40 UTC)
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: Do not write to production (it gets the changes and rolls them back)
+        type: boolean
+        default: false
       full:
-        description: Re-fetch contests of every competition and rate from scratch (~15 min)
+        description: Re-fetch contests of every competition and rate from scratch
         type: boolean
         default: false
       records:
-        description: Recompute the records (~30 s)
+        description: Recompute the records
+        type: boolean
+        default: false
+      check:
+        description: Compare every table with production at the end (reads all of production)
+        type: boolean
+        default: false
+      fresh:
+        description: Start from a new copy of production instead of the cached one
         type: boolean
         default: false
 
@@ -30,33 +44,93 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write # to delete the previous copy from the cache
 
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      FULL_RATING: ${{ inputs.full || github.event.schedule == '40 2 * * *' }}
-      RECORDS: ${{ inputs.records || github.event.schedule == '40 2 * * *' }}
+      # the jobs work on the copy; ajr.publish writes to production
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+      PRODUCTION_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      COPY: working-copy.dump
+      NIGHTLY: ${{ github.event.schedule == '40 2 * * *' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the tags too
       - name: Use the latest release
-        run: git checkout "$(git describe --tags --abbrev=0)"
+        run: |
+          git checkout "$(git describe --tags --abbrev=0)"
+          # this workflow's scripts as on main (the release may predate them)
+          git checkout "$GITHUB_SHA" -- .github/working-copy.sh .github/refresh-site.sh
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --locked
+
+      - name: Postgres for the copy
+        run: |
+          # a throwaway database: no need to survive a crash, so fast writes
+          docker run -d --name db -p 5432:5432 -e POSTGRES_PASSWORD=postgres \
+            -v "$PWD:/work" postgres:17 \
+            -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
+            -c shared_buffers=2GB -c work_mem=64MB -c maintenance_work_mem=512MB -c jit=off
+          until docker exec db pg_isready -U postgres; do sleep 1; done
+          docker exec db psql -U postgres -q -c "create role anon" -c "create role authenticated"
+
+      - name: The previous copy
+        id: cache
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.COPY }}
+          key: working-copy-${{ github.run_id }}
+          restore-keys: working-copy-
+
+      - name: Restore the copy
+        id: restore
+        run: .github/working-copy.sh restore "${{ steps.cache.outputs.cache-matched-key }}"
+
+      - name: Migrate the copy
+        run: uv run alembic upgrade head
+
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
-        id: rating
-        run: uv run python -m ajr.rating ${{ env.FULL_RATING == 'true' && '--full' || '' }}
+        run: uv run python -m ajr.rating ${{ (inputs.full || env.NIGHTLY == 'true') && '--full' || '' }}
       - name: Records
-        if: env.RECORDS == 'true'
+        if: inputs.records || env.NIGHTLY == 'true'
         run: uv run python -m ajr.records
+
+      - name: Publish
+        id: publish
+        run: uv run python -m ajr.publish publish ${{ inputs.dry_run && '--dry-run' || '' }}
       - name: Refresh the site
-        if: steps.rating.outputs.changed == 'true' || env.RECORDS == 'true'
+        if: steps.publish.outputs.changed == 'true'
         env:
           REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
         run: .github/refresh-site.sh
+      # Also after a dry run or a failed step: what was not published stays to publish
+      # (with the failed run in job_run), and the next run need not read all of
+      # production again.
+      - name: Save the copy
+        if: always() && steps.restore.outcome == 'success'
+        run: .github/working-copy.sh dump
+      - uses: actions/cache/save@v4
+        if: always() && steps.restore.outcome == 'success'
+        with:
+          path: ${{ env.COPY }}
+          key: working-copy-${{ github.run_id }}
+      - name: Delete the older copies
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key working-copy- --json key --jq '.[].key' |
+            grep -vx "working-copy-${{ github.run_id }}" |
+            xargs -r -n1 gh cache delete --repo "$GITHUB_REPOSITORY"
+
+      # last: a difference fails the run (an issue is opened), the copy is saved
+      - name: Compare with production
+        if: inputs.check || env.NIGHTLY == 'true'
+        run: uv run python -m ajr.publish check

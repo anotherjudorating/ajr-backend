@@ -10,16 +10,28 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 
 | Workflow | When | Steps |
 |---|---|---|
-| `release.yml` | a release published on GitHub | `alembic upgrade head` → `python -m ajr.rating`, with the release's code |
-| `update.yml` | every 15 minutes; nightly with a full rating; or by hand (optionally all from scratch) | with the latest release's code: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` |
+| `release.yml` | a release published on GitHub | `alembic upgrade head` on production with the release's code, the site refreshed, then an update run |
+| `update.yml` | by hand or an outside scheduler (`workflow_dispatch`); nightly with a full rating | with the latest release's code, on a working copy: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` → `python -m ajr.publish publish` → nightly `check` |
+| `alert.yml` | a run of the above failed | opens (or comments on) an issue "<workflow> is failing"; the next success closes it |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |
 
 A release is the deploy: merging into `main` changes nothing in production until
 the next release (tag `vX.Y.Z`) is published; then its migrations are applied and
-the update job switches to its code. The data workflows need the repository secret `DATABASE_URL`
-(`postgresql+psycopg://user:password@host:port/postgres`). Every step records itself
-in `ajr.job_run` (type, status, start and end, traceback of a failure).
+the update job switches to its code. The data workflows need the repository secrets
+`DATABASE_URL` (production: `postgresql+psycopg://user:password@host:port/postgres`)
+and `REVALIDATE_SECRET` (the site's, to tell it the data changed). Every step records
+itself in `ajr.job_run` (type, status, start and end, traceback of a failure).
+
+Production does none of the work. The update job runs on its own Postgres in the
+runner, a working copy of production kept between runs in the Actions cache
+(`.github/working-copy.sh`; without a cached copy, or with the `fresh` option, a new
+one is made from production, which reads all of it). Then `ajr.publish` sends only
+the rows that differ, in one transaction, and the site refreshes if any did; the
+nightly `check` compares every table (`src/ajr/publish/__init__.py`). A migration
+runs on both: on production by the release, on the copy by the next update run. A
+migration that changes the columns of a big table makes the next publish send that
+table whole, so such a migration should fill the new columns itself.
 
 - **sync** copies judobase: competitions happening now or in the next two weeks
   (draws, live results) and past competitions that changed. `--full` re-fetches all.
