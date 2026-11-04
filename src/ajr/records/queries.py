@@ -41,7 +41,8 @@ SETUP = [
     where ct.winner_id is not null
       and cm.date_from is not null
       and not coalesce(cm.is_teams, false)
-    order by p.athlete_id, ct.competition_id, ct.weight, ct.round nulls last, ct.fight_no desc
+    order by p.athlete_id, ct.competition_id, ct.weight, ct.round nulls last, ct.fight_no desc,
+             ct.id desc -- the same one every time when two have the same round and number
     """,
     f"""
     create temp table medal on commit drop as

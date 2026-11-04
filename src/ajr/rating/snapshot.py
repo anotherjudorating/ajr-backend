@@ -158,11 +158,15 @@ NATION_SNAPSHOT = text("""
 NATION_COMPETITION = text("""
     insert into ajr.nation_competition
         (country_id, competition_id, athletes, gold, silver, bronze)
+    -- An athlete's last contest there; contest id last, so that two contests with the
+    -- same round and number (judobase has a few) always give the same one.
     with ended as (
         select ct.competition_id, ct.weight, rc.athlete_id,
-               (array_agg(ct.round_name order by ct.round nulls last, ct.fight_no desc))[1]
+               (array_agg(ct.round_name
+                          order by ct.round nulls last, ct.fight_no desc, ct.id desc))[1]
                    as last_round,
-               (array_agg(rc.won order by ct.round nulls last, ct.fight_no desc))[1] as last_won
+               (array_agg(rc.won order by ct.round nulls last, ct.fight_no desc, ct.id desc))[1]
+                   as last_won
         from ajr.rating_change rc
         join ajr.contest ct on ct.id = rc.contest_id
         join ajr.competition cm on cm.id = ct.competition_id
