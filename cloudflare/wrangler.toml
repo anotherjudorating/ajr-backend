@@ -8,4 +8,4 @@ workers_dev = false # no URL: it only runs on schedule
 GITHUB_REPO = "anotherjudorating/ajr-backend"
 
 [triggers]
-crons = ["*/15 * * * *", "40 2 * * *"]
+crons = ["*/15 * * * *", "40 2 * * *", "10 3 * * 1"]

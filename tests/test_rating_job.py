@@ -341,7 +341,7 @@ def test_an_inconsistent_history_fails_the_run_and_keeps_the_last_rating():
 
 def rate_and_tell() -> bool:
     with job_run("rating"):
-        return run_rating()
+        return run_rating().changed
 
 
 def test_a_run_says_whether_the_site_may_have_changed():
@@ -365,4 +365,31 @@ def test_the_command_line_writes_the_answer_for_the_workflow(tmp_path, monkeypat
     main([])
     main([])
 
-    assert output.read_text() == "changed=true\nchanged=false\n"
+    assert output.read_text() == "changed=true\ncorrected=0\nchanged=false\ncorrected=0\n"
+
+
+# --- the nightly full run --------------------------------------------------------
+
+
+def test_a_full_run_on_a_right_history_corrects_nothing():
+    add_contests()
+    rate()
+
+    with job_run("rating_full"):
+        assert run_rating(full=True).corrected == 0
+
+
+def test_a_full_run_reports_the_rows_it_corrected():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        # as a missed change would leave it: a contest whose rating is off
+        session.execute(
+            update(RatingChange)
+            .where(RatingChange.contest_id == 101, RatingChange.athlete_id == 1)
+            .values(rating_after=RatingChange.rating_after + 1)
+        )
+        session.commit()
+
+    with job_run("rating_full"):
+        assert run_rating(full=True).corrected == 1

@@ -2,9 +2,11 @@ name: Update data
 
 # Each run: new data from judobase, the rating from the first competition whose
 # results changed, today's tables. Started by hand or by the Cloudflare Worker
-# (cloudflare/worker.js): every 15 minutes, and nightly with `full_rating`, `records`
-# and `check` (the rating from scratch as a safety net, the records, a comparison of
-# every table with production). GitHub's own schedule fired only a few times a day.
+# (cloudflare/worker.js): every 15 minutes; nightly with `full_rating` and `records`
+# (the rating from scratch as a safety net; the records if results changed); on
+# Monday nights with `full` and `check` (every competition fetched again, every table
+# compared with production). What the nightly checks correct opens an issue.
+# GitHub's own schedule fired only a few times a day.
 #
 # All of it on a working copy of production, so that production does none of the
 # work (python -m ajr.publish): a Postgres here, restored from the previous run's
@@ -48,6 +50,7 @@ concurrency:
 permissions:
   contents: read
   actions: write # to delete the previous copy from the cache
+  issues: write # to report what the nightly checks corrected
 
 jobs:
   update:
@@ -97,12 +100,16 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: Sync judobase
+        id: sync
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
+        id: rating
         run: uv run python -m ajr.rating ${{ (inputs.full || inputs.full_rating) && '--full' || '' }}
       - name: Records
         if: inputs.records
-        run: uv run python -m ajr.records
+        # only if results changed since the last records (or a week passed), or the
+        # full rating just corrected the history
+        run: uv run python -m ajr.records ${{ steps.rating.outputs.corrected == '0' && '--if-changed' || '' }}
 
       - name: Publish
         id: publish
@@ -112,6 +119,30 @@ jobs:
         env:
           REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
         run: .github/refresh-site.sh
+      # Not a failure (the run fixed it), but something to look into: the 15-minute
+      # sync missed changed results, or the runs since changes left the history
+      # different from a full rating.
+      - name: Report what the checks corrected
+        if: ${{ !inputs.dry_run && (steps.sync.outputs.unannounced > 0 || steps.rating.outputs.corrected > 0) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UNANNOUNCED: ${{ steps.sync.outputs.unannounced }}
+          NAMES: ${{ steps.sync.outputs.unannounced_names }}
+          CORRECTED: ${{ steps.rating.outputs.corrected }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="The nightly checks corrected the data"
+          body="Run $RUN (published: the site has the corrected data)."
+          [ "${UNANNOUNCED:-0}" -gt 0 ] && body="$body
+          - The full sync found $UNANNOUNCED competitions whose results changed although judobase did not say so (the 15-minute sync misses them): $NAMES"
+          [ "${CORRECTED:-0}" -gt 0 ] && body="$body
+          - The full rating differed from the history the runs since changes had left in $CORRECTED rows: a change the sync did not mark, or a bug in rating from a day."
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+                  --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -z "$issue" ]; then gh issue create --title "$title" --body "$body"
+          else gh issue comment "$issue" --body "$body"; fi
+
       # Also after a dry run or a failed step: what was not published stays to publish
       # (with the failed run in job_run), and the next run need not read all of
       # production again.

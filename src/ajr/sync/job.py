@@ -41,8 +41,11 @@ COMPETITIONS_PER_BATCH = 16
 ROWS_PER_INSERT = 1000
 
 
-async def run_sync(full: bool = False) -> None:
+async def run_sync(full: bool = False) -> list[Competition]:
+    """The competitions whose results changed although judobase did not say so (their
+    `updated` the same): only a full sync finds those, the 15-minute one misses them."""
     today = date.today()
+    unannounced: list[Competition] = []
     async with JudobaseClient() as client:
         with Session(engine) as session:
             save_olympic_cycles(session)
@@ -50,6 +53,7 @@ async def run_sync(full: bool = False) -> None:
             save_competitions(session, await client.competitions(), country_ids)
             session.commit()
             competitions = pick_competitions_to_sync(session, today, full)
+            announced = {c.id for c in pick_competitions_to_sync(session, today, False)}
             known_athletes = set(session.scalars(select(Athlete.id)))
 
         logger.info("Syncing contests of %d competitions", len(competitions))
@@ -59,9 +63,11 @@ async def run_sync(full: bool = False) -> None:
             for competition, contests in zip(batch, results, strict=True):
                 if contests is None:
                     continue
-                await save_competition_contests(
+                changed = await save_competition_contests(
                     client, competition, contests, known_athletes, country_ids
                 )
+                if changed and competition.id not in announced:
+                    unannounced.append(competition)
             logger.info(
                 "Done %d/%d",
                 min(start + COMPETITIONS_PER_BATCH, len(competitions)),
@@ -70,7 +76,13 @@ async def run_sync(full: bool = False) -> None:
 
         await save_world_ranking(client, known_athletes)
 
+    if unannounced:
+        logger.warning(
+            "Results changed without judobase saying so: %s",
+            ", ".join(f"{c.id} {c.name}" for c in unannounced),
+        )
     logger.info("Sync finished")
+    return unannounced
 
 
 # --- reference data ----------------------------------------------------------
@@ -188,7 +200,8 @@ async def save_competition_contests(
     items: list[judobase.Contest],
     known_athletes: set[int],
     country_ids: set[int],
-) -> None:
+) -> bool:
+    """Whether the results changed (what the rating reads of them)."""
     if not items:
         with Session(engine) as session:
             saved = session.scalar(
@@ -200,7 +213,7 @@ async def save_competition_contests(
                 competition.id,
                 saved,
             )
-            return
+            return False
 
     new_athletes = await fetch_new_athletes(client, items, known_athletes)
     for athlete in new_athletes:
@@ -230,7 +243,8 @@ async def save_competition_contests(
         upsert(session, contests)
         remove_missing_contests(session, competition.id, [contest.id for contest in contests])
         values = {"contests_synced_for": competition.updated_at}
-        if saved_results(session, competition.id) != results_before:
+        changed = saved_results(session, competition.id) != results_before
+        if changed:
             values["results_changed_at"] = func.now()  # the rating picks it up
         session.execute(update(Competition).where(Competition.id == competition.id).values(values))
         session.commit()
@@ -242,6 +256,7 @@ async def save_competition_contests(
         len(contests),
         len(new_athletes),
     )
+    return changed
 
 
 async def fetch_new_athletes(
@@ -266,14 +281,22 @@ async def fetch_new_athletes(
     return list(await asyncio.gather(*(fetch_one(i) for i in from_contests)))
 
 
-def saved_results(session: Session, competition_id: int) -> dict[int, int]:
-    """Decided contests of the competition: contest id -> winner id."""
+# What the rating reads of a contest (ajr/rating/engine.py): a change in any of
+# them, not only in the winner, must have the competition rated again.
+RATED_FIELDS = (
+    Contest.winner_id, Contest.blue_id, Contest.white_id, Contest.started_at, Contest.weight,
+    Contest.round, Contest.fight_no, Contest.bye, Contest.duration,
+)  # fmt: skip
+
+
+def saved_results(session: Session, competition_id: int) -> dict[int, tuple]:
+    """Decided contests of the competition: contest id -> what the rating reads of it."""
     rows = session.execute(
-        select(Contest.id, Contest.winner_id)
+        select(Contest.id, *RATED_FIELDS)
         .where(Contest.competition_id == competition_id)
         .where(Contest.winner_id.is_not(None))
     )
-    return dict(rows.all())
+    return {row[0]: tuple(row[1:]) for row in rows}
 
 
 def remove_missing_contests(session: Session, competition_id: int, contest_ids: list[int]) -> None:

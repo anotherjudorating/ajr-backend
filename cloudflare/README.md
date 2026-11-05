@@ -1,9 +1,9 @@
 # Update trigger
 
-A Cloudflare Worker that starts the "Update data" workflow every 15 minutes, and
-nightly (02:40 UTC) with `full_rating`, `records` and `check` (`worker.js`, schedules in
-`wrangler.toml`). GitHub's own schedule fired only a few times a day; the Worker's
-cron runs on time, on Cloudflare's free plan.
+A Cloudflare Worker that starts the "Update data" workflow every 15 minutes, nightly
+(02:40 UTC) with `full_rating` and `records`, and on Monday nights (03:10 UTC) with
+`full` and `check` (`worker.js`, schedules in `wrangler.toml`). GitHub's own schedule
+fired only a few times a day; the Worker's cron runs on time, on Cloudflare's free plan.
 
 Deploy (from this folder, with a Cloudflare API token allowed "Account > Workers
 Scripts > Edit" in `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`):

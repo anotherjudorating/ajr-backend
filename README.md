@@ -11,7 +11,7 @@ site reads it through the Supabase Data API, which exposes only the `api` schema
 | Workflow | When | Steps |
 |---|---|---|
 | `release.yml` | a release published on GitHub | `alembic upgrade head` on production with the release's code, the site refreshed, then an update run |
-| `update.yml` | every 15 minutes and nightly (02:40 UTC, with a full rating), started by a Cloudflare Worker (`cloudflare/`); or by hand | with the latest release's code, on a working copy: `python -m ajr.sync` → `python -m ajr.rating` → nightly `python -m ajr.records` → `python -m ajr.publish publish` → nightly `check` |
+| `update.yml` | every 15 minutes, nightly (02:40 UTC: full rating, records if results changed) and Monday nights (03:10 UTC: full sync, comparison with production), started by a Cloudflare Worker (`cloudflare/`); or by hand | with the latest release's code, on a working copy: `python -m ajr.sync` → `python -m ajr.rating` → `python -m ajr.records --if-changed` → `python -m ajr.publish publish` → `check`; an issue when the nightly checks corrected something |
 | `alert.yml` | a run of the above failed | opens (or comments on) an issue "<workflow> is failing"; the next success closes it |
 | `backup.yml` | Mondays | dump of `country`, `competition`, `athlete`, `contest` as a workflow artifact, kept 90 days |
 | `tests.yml` | pull requests, pushes to `main` | ruff, pytest against Postgres 17 |
@@ -48,7 +48,7 @@ echo 'DATABASE_URL=postgresql+psycopg://...' > .env   # the database to work wit
 uv run pytest           # starts a throwaway local Postgres; never touches .env's database
 uv run python -m ajr.sync
 uv run python -m ajr.rating
-uv run python -m ajr.records                  # all-time records (nightly in production)
+uv run python -m ajr.records                  # all-time records (nightly in production if results changed)
 uv run python -m ajr.rating.tune --check 10   # parameter search on the real data
 ```
 
