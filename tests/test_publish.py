@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Competition, Contest, Country
-from ajr.publish import NOT_PUBLISHED, Change, check, publish, published_tables
+from ajr.publish import NOT_PUBLISHED, Change, check, publish, published_tables, site_changed
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -238,3 +238,15 @@ def test_many_rows_are_upserted_in_parts(connections, monkeypatch):
 
     assert changed(publish(local, remote))["athlete"] == (3, 0)
     assert_same(local, remote)
+
+
+def test_a_run_that_only_logged_itself_does_not_refresh_the_site(connections):
+    local, remote = connections
+    add_data()
+    publish(local, remote)
+
+    run("insert into ajr.job_run (type, status, started_at) values ('sync', 'success', now())")
+    assert not site_changed(publish(local, remote))  # job_run only
+
+    run("update ajr.athlete set given_name = 'Hifumi' where id = 1")
+    assert site_changed(publish(local, remote))
