@@ -70,3 +70,25 @@ def test_the_job_keeps_how_each_athlete_did():
 
     key = lambda row: row["athlete_id"]  # noqa: E731
     assert sorted(kept, key=key) == sorted(results, key=key)
+
+
+def test_contest_context_is_what_the_contest_page_shows():
+    """Each athlete's contests at the tournament and their meetings, as in their histories."""
+    add_data()
+    add_moves()
+    [one] = call("select contest_id from api.competition_contests(40) limit 1")
+    [c] = call(f"select * from api.contest({one['contest_id']})")
+
+    rows = call(f"select * from api.contest_context({c['contest_id']})")
+
+    for side in ("white", "blue"):
+        history = call(f"select * from api.athlete_history({c[side + '_id']})")
+        road = [r for r in history if r["competition_id"] == c["competition_id"]]
+        got = [{k: v for k, v in r.items() if k not in ("side", "kind")}
+               for r in rows if r["side"] == side and r["kind"] == "road"]  # fmt: skip
+        assert got == road
+    white = call(f"select * from api.athlete_history({c['white_id']})")
+    meetings = [r for r in white if r["opponent_id"] == c["blue_id"]]
+    got = [{k: v for k, v in r.items() if k not in ("side", "kind")}
+           for r in rows if r["kind"] == "meeting"]  # fmt: skip
+    assert got == meetings and got
