@@ -13,7 +13,7 @@ import sys
 import psycopg
 from sqlalchemy import make_url
 
-from ajr.publish import adopt, check, publish
+from ajr.publish import adopt, check, publish, site_changed
 
 
 def plain(url: str) -> str:
@@ -52,7 +52,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1 if differences else 0
 
-            changes = [c for c in publish(local, remote, args.dry_run) if c.upserted or c.deleted]
+            published = publish(local, remote, args.dry_run)
+            changes = [c for c in published if c.upserted or c.deleted]
     summary(
         [f"### {'Would publish (dry run)' if args.dry_run else 'Published'}", ""]
         + (
@@ -67,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a") as file:
-            file.write(f"changed={'true' if changes and not args.dry_run else 'false'}\n")
+            refresh = site_changed(published) and not args.dry_run
+            file.write(f"changed={'true' if refresh else 'false'}\n")
     return 0
 
 

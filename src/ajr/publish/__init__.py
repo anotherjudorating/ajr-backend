@@ -32,6 +32,15 @@ NOT_PUBLISHED = {
     "alembic_version",  # migrations run on each database
     "matchup_views",  # counted by the site's visitors
 }
+# Published, but not what the site's pages show: a change to them alone does not
+# make the site refresh its cache (every run logs itself in job_run; the site only
+# shows the day of the last update, which changes with today's tables anyway).
+NOT_SHOWN = {"job_run"}
+
+
+def site_changed(changes: list[Change]) -> bool:
+    """Whether a publish changed anything the site's pages show."""
+    return any((c.upserted or c.deleted) and c.table not in NOT_SHOWN for c in changes)
 
 
 @dataclass(frozen=True)
