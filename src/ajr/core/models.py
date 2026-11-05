@@ -5,7 +5,7 @@ Ids of countries, athletes, competitions and contests are judobase ids.
 
 from datetime import date, datetime
 
-from sqlalchemy import ARRAY, DateTime, Index, Integer
+from sqlalchemy import ARRAY, DateTime, Index, Integer, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -297,3 +297,8 @@ class AthleteSummary(SQLModel, table=True):
     country: str | None = None  # IOC
     birth_year: int | None = None
     last_competition: str | None = None
+    # for the athlete's page (api.athlete)
+    weights: list[str] | None = Field(default=None, sa_type=ARRAY(Text))  # the latest first
+    peak_score: int | None = None  # the best score at the end of a day of contests
+    peak_on: date | None = None
+    peak_weight: str | None = None

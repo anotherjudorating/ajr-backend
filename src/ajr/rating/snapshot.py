@@ -57,18 +57,43 @@ COMPETITION_STATS = text("""
 ATHLETE_SUMMARY = text("""
     insert into ajr.athlete_summary
         (athlete_id, weight, last_contest, last_competition_id, contests, place, score,
-         family_name, given_name, gender, country, birth_year, last_competition)
+         family_name, given_name, gender, country, birth_year, last_competition,
+         weights, peak_score, peak_on, peak_weight)
+    with counted as (
+        select athlete_id, count(*) as contests from ajr.rating_change group by athlete_id
+    ),
+    -- the categories fought in, the latest first
+    weights as (
+        select athlete_id, array_agg(weight order by last desc, weight) as weights
+        from (
+            select athlete_id, weight, max(fought_on) as last
+            from ajr.rating_change
+            where weight is not null
+            group by athlete_id, weight
+        ) w
+        group by athlete_id
+    ),
+    -- the best score at the end of a day of contests (the earliest such day)
+    peaks as (
+        select distinct on (rc.athlete_id) rc.athlete_id, rc.fought_on, rc.weight,
+               round(rc.rating_after - s.rd_factor * rc.rd_after) as score
+        from ajr.rating_change rc
+        cross join ajr.rating_settings s
+        where rc.next_fought_on > rc.fought_on and rc.weight is not null
+        order by rc.athlete_id, rc.rating_after - s.rd_factor * rc.rd_after desc, rc.fought_on
+    )
     select rc.athlete_id, rc.weight, rc.fought_on, ct.competition_id, counted.contests,
            snapshot.place, snapshot.score,
-           a.family_name, a.given_name, a.gender, co.ioc, a.dob_year, cm.name
+           a.family_name, a.given_name, a.gender, co.ioc, a.dob_year, cm.name,
+           weights.weights, peaks.score, peaks.fought_on, peaks.weight
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
     join ajr.competition cm on cm.id = ct.competition_id
     join ajr.athlete a on a.id = rc.athlete_id
     left join ajr.country co on co.id = a.country_id
-    join (
-        select athlete_id, count(*) as contests from ajr.rating_change group by athlete_id
-    ) counted on counted.athlete_id = rc.athlete_id
+    join counted on counted.athlete_id = rc.athlete_id
+    left join weights on weights.athlete_id = rc.athlete_id
+    left join peaks on peaks.athlete_id = rc.athlete_id
     left join ajr.leaderboard_snapshot snapshot on snapshot.athlete_id = rc.athlete_id
     where rc.next_fought_on = date '9999-12-31'
 """)
