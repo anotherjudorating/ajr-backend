@@ -227,3 +227,14 @@ def test_check_finds_the_tables_that_differ(connections):
     remote.commit()
 
     assert [d.table for d in check(local, remote)] == ["contest"]
+
+
+def test_many_rows_are_upserted_in_parts(connections, monkeypatch):
+    import ajr.publish
+
+    local, remote = connections
+    monkeypatch.setattr(ajr.publish, "UPSERT_ROWS", 2)  # three athletes: two parts
+    add_data()
+
+    assert changed(publish(local, remote))["athlete"] == (3, 0)
+    assert_same(local, remote)

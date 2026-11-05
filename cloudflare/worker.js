@@ -7,7 +7,8 @@
 const RUNS = {
   "*/15 * * * *": {},
   // nightly: the rating from scratch, the records, every table compared with production
-  "40 2 * * *": { full: "true", records: "true", check: "true" },
+  // (not `full`: that re-fetches every competition from judobase too)
+  "40 2 * * *": { full_rating: "true", records: "true", check: "true" },
 };
 
 export default {

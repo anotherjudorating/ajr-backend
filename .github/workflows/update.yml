@@ -2,8 +2,8 @@ name: Update data
 
 # Each run: new data from judobase, the rating from the first competition whose
 # results changed, today's tables. Started by hand or by the Cloudflare Worker
-# (cloudflare/worker.js): every 15 minutes, and nightly with `full`, `records` and
-# `check` (the rating from scratch as a safety net, the records, a comparison of
+# (cloudflare/worker.js): every 15 minutes, and nightly with `full_rating`, `records`
+# and `check` (the rating from scratch as a safety net, the records, a comparison of
 # every table with production). GitHub's own schedule fired only a few times a day.
 #
 # All of it on a working copy of production, so that production does none of the
@@ -22,6 +22,10 @@ on:
         default: false
       full:
         description: Re-fetch contests of every competition and rate from scratch
+        type: boolean
+        default: false
+      full_rating:
+        description: Rate from scratch (the nightly safety net), without re-fetching
         type: boolean
         default: false
       records:
@@ -95,7 +99,7 @@ jobs:
       - name: Sync judobase
         run: uv run python -m ajr.sync ${{ inputs.full && '--full' || '' }}
       - name: Rating
-        run: uv run python -m ajr.rating ${{ inputs.full && '--full' || '' }}
+        run: uv run python -m ajr.rating ${{ (inputs.full || inputs.full_rating) && '--full' || '' }}
       - name: Records
         if: inputs.records
         run: uv run python -m ajr.records

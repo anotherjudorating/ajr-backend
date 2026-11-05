@@ -1,7 +1,7 @@
 # Update trigger
 
 A Cloudflare Worker that starts the "Update data" workflow every 15 minutes, and
-nightly (02:40 UTC) with `full`, `records` and `check` (`worker.js`, schedules in
+nightly (02:40 UTC) with `full_rating`, `records` and `check` (`worker.js`, schedules in
 `wrangler.toml`). GitHub's own schedule fired only a few times a day; the Worker's
 cron runs on time, on Cloudflare's free plan.
 
