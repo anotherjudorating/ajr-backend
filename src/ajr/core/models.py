@@ -137,8 +137,14 @@ class RatingChange(SQLModel, table=True):
     __table_args__ = (
         # The table of a weight category on a day.
         Index("ix_rating_change_weight_next_fought_on", "weight", "next_fought_on"),
-        # The same, for a day in the past: the contests of the year before it.
-        Index("ix_rating_change_weight_fought_on", "weight", "fought_on"),
+        # The same, for a day in the past: the contests of the year before it, with
+        # what ajr.board_at reads, so that it does not read the table.
+        Index(
+            "ix_rating_change_weight_fought_on_board",
+            "weight",
+            "fought_on",
+            postgresql_include=["next_fought_on", "athlete_id", "rating_after", "rd_after"],
+        ),
         # An athlete's history.
         Index("ix_rating_change_athlete_id_fought_on", "athlete_id", "fought_on"),
         {"schema": SCHEMA},
@@ -226,7 +232,8 @@ class LeaderboardSnapshot(SQLModel, table=True):
     rating job (see ajr/rating/snapshot.py)."""
 
     __tablename__ = "leaderboard_snapshot"
-    __table_args__ = {"schema": SCHEMA}
+    # The top places of every weight (the home page).
+    __table_args__ = (Index("ix_leaderboard_snapshot_place", "place"), {"schema": SCHEMA})
 
     weight: str = Field(primary_key=True)
     day: date
@@ -281,7 +288,7 @@ class AthleteSummary(SQLModel, table=True):
     """Per rated athlete, for the Explore lists; rebuilt by the rating job."""
 
     __tablename__ = "athlete_summary"
-    __table_args__ = (Index("ix_athlete_summary_weight", "weight"), {"schema": SCHEMA})
+    __table_args__ = {"schema": SCHEMA}
 
     athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
     weight: str | None = None
