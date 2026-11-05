@@ -117,3 +117,18 @@ def test_search_index():
     assert [t[0] for t in index["tournaments"]][0] == 90  # the coming one first
     assert {t[0] for t in index["tournaments"]} == {90, 10, 20, 30, 40}
     assert index["nations"] == [["JPN", "Japan"]]
+
+
+def test_sitemap():
+    add_data()
+    add_moves()
+
+    [doc] = call("select api.sitemap() as doc")
+    doc = doc["doc"]
+
+    summaries = call("select id, last_contest, contests from api.athletes(top => 1000)")
+    assert {a[0]: (a[1], a[2]) for a in doc["athletes"]} == {
+        s["id"]: (str(s["last_contest"]), s["contests"]) for s in summaries
+    }
+    assert {t[0] for t in doc["tournaments"]} == {10, 20, 30, 40}
+    assert doc["nations"] == ["JPN"]
