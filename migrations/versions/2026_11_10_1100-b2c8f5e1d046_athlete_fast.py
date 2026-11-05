@@ -20,6 +20,10 @@ The athlete's page and the contest's page read far less of the history:
   found from the contest itself (by the tournament's and the athletes' contests)
   instead of loading both whole histories (about 45 % of the database's time a day:
   one contest page loaded two histories).
+- api.competition_contests joined a contest's rating rows on the contest and the
+  athlete together: the planner multiplied the two estimates and walked each white
+  athlete's whole history (55,775 pages for the 2019 Worlds). "Not the other athlete"
+  picks the same row and is estimated right (as ajr.contest_list since 11-03): 7,392.
 
 The new athlete_summary columns are empty until the next update run publishes the
 table (minutes after the release): until then the page shows no peak.
@@ -239,6 +243,18 @@ $$
 """
 
 
+def competition_contests(module) -> str:
+    """The tournament migration's api.competition_contests with the right join."""
+    sql = module.COMPETITION_CONTESTS.replace("create function", "create or replace function")
+    for old, new in (
+        ("wr.athlete_id = ct.white_id", "wr.athlete_id <> ct.blue_id"),
+        ("br.athlete_id = ct.blue_id", "br.athlete_id <> ct.white_id"),
+    ):
+        assert old in sql
+        sql = sql.replace(old, new)
+    return sql
+
+
 def load_migration(name: str):
     """An earlier migration's module, to restore its SQL."""
     import importlib.util
@@ -257,6 +273,7 @@ def upgrade() -> None:
     op.execute(SCORE_AT)
     op.execute(ATHLETE)
     op.execute(CONTEST_CONTEXT)
+    op.execute(competition_contests(load_migration("00e6280e8753_tournament")))
     op.execute("revoke execute on function api.contest_context(integer) from public")
     op.execute("grant execute on function api.contest_context(integer) to anon, authenticated")
 
@@ -264,6 +281,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     op.execute("drop function api.contest_context(integer)")
+    tournament = load_migration("00e6280e8753_tournament")
+    op.execute(
+        tournament.COMPETITION_CONTESTS.replace("create function", "create or replace function")
+    )
     page = load_migration("bc0c985bd1f9_athlete_page")
     for sql in (page.SCORE_AT, page.ATHLETE):
         op.execute(sql.replace("create function", "create or replace function"))
