@@ -43,8 +43,8 @@ def judobase(monkeypatch) -> FakeJudobase:
     return fake
 
 
-def sync(full: bool = False) -> None:
-    asyncio.run(job.run_sync(full=full))
+def sync(full: bool = False) -> list:
+    return asyncio.run(job.run_sync(full=full))
 
 
 def stored[T: SQLModel](model: type[T]) -> dict[int, T]:
@@ -297,6 +297,36 @@ def test_changed_results_move_the_mark(judobase, new_contests):
     sync()
 
     assert results_changed_at() > first_mark
+
+
+def test_a_changed_start_time_moves_the_mark(judobase):
+    """The rating orders and dates contests by their start: not only winners count."""
+    add_past_competition(judobase)
+    sync()
+    first_mark = results_changed_at()
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    judobase.contests_of[1] = [
+        type(c).model_validate({**c.model_dump(), "date_start_ts": "1722585668000"})  # +1 day
+        for c in judobase.contests_of[1]
+    ]
+
+    sync()
+
+    assert results_changed_at() > first_mark
+
+
+def test_a_full_sync_reports_results_changed_unannounced(judobase):
+    add_past_competition(judobase)
+    sync()
+    # judobase corrected a winner but did not change the competition's `updated`
+    judobase.contests_of[1] = [
+        contest(11, 1, blue=100, white=200, winner=100),
+        contest(12, 1, blue=200, white=300, winner=300),
+    ]
+
+    assert sync() == []  # the 15-minute sync does not look again
+    assert [c.id for c in sync(full=True)] == [1]
+    assert sync(full=True) == []  # nothing new the second time
 
 
 def test_draw_without_results_does_not_mark(judobase):

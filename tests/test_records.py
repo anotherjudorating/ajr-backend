@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import Session
 
 from ajr.core.db import engine
@@ -147,9 +147,29 @@ def test_command_line():
     from ajr.records.__main__ import main
 
     prepare()
-    main()
+    main([])
 
     assert call("select * from api.records(1)") != []
+
+
+def test_records_only_when_results_changed(caplog):
+    from ajr.records.__main__ import main
+
+    prepare()
+    main(["--if-changed"])  # never computed: computed
+    assert call("select * from api.records(1)") != []
+
+    with caplog.at_level("INFO"):
+        main(["--if-changed"])
+    assert "nothing to do" in caplog.text
+
+    caplog.clear()
+    with Session(engine) as session:  # new results somewhere
+        session.execute(update(Competition).values(results_changed_at=func.now()))
+        session.commit()
+    with caplog.at_level("INFO"):
+        main(["--if-changed"])
+    assert "nothing to do" not in caplog.text
 
 
 def test_weekly_records_count_from_when_the_ratings_settled(monkeypatch):

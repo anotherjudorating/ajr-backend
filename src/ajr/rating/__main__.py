@@ -17,11 +17,13 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with job_run("rating_full" if args.full else "rating"):
-        changed = run_rating(full=args.full)
-    # For the update workflow: whether to tell the site to refresh its cache.
+        outcome = run_rating(full=args.full)
+    # For the update workflow: whether to tell the site to refresh its cache, and
+    # whether a full run corrected the history (an issue is opened).
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a") as file:
-            file.write(f"changed={'true' if changed else 'false'}\n")
+            file.write(f"changed={'true' if outcome.changed else 'false'}\n")
+            file.write(f"corrected={outcome.corrected}\n")
 
 
 if __name__ == "__main__":

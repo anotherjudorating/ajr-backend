@@ -23,7 +23,7 @@ it back and fails the job.
 """
 
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 
 from sqlalchemy import delete, func, select, text, update
@@ -49,14 +49,26 @@ COLUMNS = [
 ]  # fmt: skip
 
 
+@dataclass(frozen=True)
+class RatingRun:
+    # what the site shows may have changed: the site is then told to refresh
+    changed: bool
+    # a full run asked for (the nightly safety net): rows of the history it found
+    # different from what the runs since changes had left; 0 is how it should be
+    corrected: int = 0
+
+
 def run_rating(
     full: bool = False, params: RatingParams = PARAMS, ranking: RankingParams = RANKING
-) -> bool:
-    """Whether what the site shows may have changed: the site is then told to refresh
-    (python -m ajr.rating writes it for the update workflow)."""
+) -> RatingRun:
+    """python -m ajr.rating writes the outcome for the update workflow."""
     with Session(engine) as session:
-        if full or needs_full_run(session, params, ranking):
+        corrected = 0
+        if needs_full_run(session, params, ranking):
             rate_everything(session, params)
+            refresh_contest_list(session, None)
+        elif full:
+            corrected = rate_everything(session, params, compare=True)
             refresh_contest_list(session, None)
         else:
             since = first_changed_competition_day(session)
@@ -67,7 +79,7 @@ def run_rating(
                 refresh_snapshot(session)
                 check_rating(session)
                 session.commit()
-                return site_visible_state(session) != before
+                return RatingRun(changed=site_visible_state(session) != before)
             rate_since(session, since, params)
             refresh_contest_list(session, since.year)
         session.merge(settings(params, ranking))
@@ -75,7 +87,7 @@ def run_rating(
         check_rating(session)
         session.commit()
     logger.info("Rating saved")
-    return True
+    return RatingRun(changed=True, corrected=corrected)
 
 
 # What a run without new results can still change on the site: the day of today's
@@ -180,14 +192,35 @@ def first_changed_competition_day(session: Session) -> date | None:
     )
 
 
-def rate_everything(session: Session, params: RatingParams) -> None:
+def rate_everything(session: Session, params: RatingParams, compare: bool = False) -> int:
+    """With `compare`: how many rows differ from the history there was (seq aside,
+    which only numbers them)."""
     contests = load_contests(session.connection())
     rows = rating_change_rows(run(contests, params))
     logger.info("Full run: %d rating changes from %d contests", len(rows), len(contests))
+    corrected = differences(session, rows) if compare else 0
+    if corrected:
+        logger.warning("The history differed from a full run in %d rows: corrected", corrected)
     session.execute(delete(RatingChange))
     copy_rows(session, rows)
     # the planner's statistics of the new rows, for the lists built from them next
     session.execute(text("analyze ajr.rating_change"))
+    return corrected
+
+
+COMPARED = [column for column in COLUMNS if column != "seq"]
+
+
+def differences(session: Session, rows: list[dict]) -> int:
+    """Rows of the new history that are not in the saved one, plus saved rows gone."""
+    connection = session.connection()
+    connection.execute(text("set local extra_float_digits = 3"))  # ratings exactly
+    saved = {
+        (row.contest_id, row.athlete_id): tuple(row)
+        for row in connection.execute(text(f"select {', '.join(COMPARED)} from ajr.rating_change"))
+    }
+    new = {(row["contest_id"], row["athlete_id"]): tuple(row[c] for c in COMPARED) for row in rows}
+    return sum(saved.get(key) != value for key, value in new.items()) + len(saved.keys() - new)
 
 
 # The rows from the first competition starting on `since` on (they all come after

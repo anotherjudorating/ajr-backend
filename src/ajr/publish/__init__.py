@@ -109,12 +109,16 @@ def names(columns: list[str]) -> sql.Composable:
 
 
 def stream(
-    local: Connection, remote: Connection, query: sql.Composable, into: sql.Identifier
+    local: Connection,
+    remote: Connection,
+    query: sql.Composable,
+    into: sql.Identifier,
+    columns: sql.Composable,
 ) -> int:
     """Rows of a query on the working copy into a temporary table on production; how many."""
     with local.cursor().copy(sql.SQL("copy ({}) to stdout (format binary)").format(query)) as out:
         with remote.cursor().copy(
-            sql.SQL("copy {} from stdin (format binary)").format(into)
+            sql.SQL("copy {} ({}) from stdin (format binary)").format(into, columns)
         ) as copy:
             for block in out:
                 copy.write(block)
@@ -160,9 +164,22 @@ def stage(local: Connection, remote: Connection, table: Table) -> Staged:
                 temp, columns, ours
             )
         )
-    upserted = stream(local, remote, rows, upserts)
-    stream(local, remote, keys, deletes)
+    # numbered, to upsert them in parts
+    remote.execute(
+        sql.SQL("alter table {} add column publish_n bigint generated always as identity").format(
+            upserts
+        )
+    )
+    upserted = stream(local, remote, rows, upserts, cols)
+    stream(local, remote, keys, deletes, key)
     return Staged(table, upserts, deletes, whole, upserted)
+
+
+# Rows per upsert statement: production's statements have a 2-minute limit, and a
+# night when judobase changed old results rewrites most of the history (450 thousand
+# rows of rating_change, one statement of which took about 3 minutes). The parts run
+# in the same transaction: the site still sees all of a run's changes at once.
+UPSERT_ROWS = 50_000
 
 
 def upsert(remote: Connection, staged: Staged) -> None:
@@ -179,11 +196,12 @@ def upsert(remote: Connection, staged: Staged) -> None:
         if updates
         else sql.SQL("do nothing")
     )
-    remote.execute(
-        sql.SQL("insert into {} ({}) select {} from {} on conflict ({}) {}").format(
-            sql.Identifier(SCHEMA, table.name), cols, cols, staged.upserts, key, on_conflict
-        )
-    )
+    statement = sql.SQL(
+        "insert into {} ({}) select {} from {} where publish_n > %s and publish_n <= %s "
+        "on conflict ({}) {}"
+    ).format(sql.Identifier(SCHEMA, table.name), cols, cols, staged.upserts, key, on_conflict)
+    for first in range(0, staged.upserted, UPSERT_ROWS):
+        remote.execute(statement, [first, first + UPSERT_ROWS])
 
 
 def delete(remote: Connection, staged: Staged) -> int:
