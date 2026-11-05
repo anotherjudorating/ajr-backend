@@ -28,6 +28,26 @@ INSERT = """
 """
 
 
+# The names the site shows with a record's rows, written once here instead of looked
+# up on every request: a nation's record has the nation, an athlete's their nation.
+NAMES = """
+    update ajr.record r
+    set family_name = a.family_name,
+        given_name = a.given_name,
+        gender = a.gender,
+        opponent_family_name = o.family_name,
+        opponent_given_name = o.given_name,
+        country = co.ioc,
+        country_name = co.name,
+        competition = cm.name
+    from ajr.record named
+    left join ajr.athlete a on a.id = named.athlete_id
+    left join ajr.athlete o on o.id = named.opponent_id
+    left join ajr.country co on co.id = coalesce(named.country_id, a.country_id)
+    left join ajr.competition cm on cm.id = named.competition_id
+    where named.id = r.id
+"""
+
 HISTORY_COPY = "copy ajr.nation_history (day, country_id, place, rating) from stdin"
 
 
@@ -45,6 +65,8 @@ def run_records(today: date | None = None) -> None:
         for name, rows in weekly.items():
             session.add_all(Record(record=name, **row) for row in rows)
             logger.info("%s: %d rows", name, len(rows))
+        session.flush()
+        connection.execute(text(NAMES))
         connection.execute(text("delete from ajr.nation_history"))
         cursor = connection.connection.cursor()
         with cursor.copy(HISTORY_COPY) as copy:

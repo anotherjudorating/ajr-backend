@@ -59,6 +59,10 @@ def test_records():
     assert all(row["detail"]["contest"] for row in records["biggest_upsets"])
     rivalry = records["most_frequent_rivalry"][0]
     assert rivalry["value"] == 1 and rivalry["opponent_id"] is not None
+    assert rivalry["opponent_family_name"].startswith("NAME")
+    # the names come with every row, written by the job
+    athletes = [row for rows in records.values() for row in rows if row["athlete_id"]]
+    assert all(row["family_name"] and row["country"] for row in athletes)
     # too few athletes in a table for the weekly records
     assert "longest_at_1" not in records
 
@@ -93,6 +97,8 @@ def test_weekly_records(monkeypatch):
     assert records["youngest_p4p_1"] and records["biggest_p4p_lead"][0]["value"] > 0
     assert "biggest_lead" not in records
     assert "highest_team_rating" not in records  # needs a table in every weight
+    # the rows computed in Python get their names too
+    assert at_1[1]["family_name"].startswith("NAME") and at_1[1]["country"]
 
 
 def test_records_replace_the_old_ones():

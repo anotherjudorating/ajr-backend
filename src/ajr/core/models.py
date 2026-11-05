@@ -5,7 +5,7 @@ Ids of countries, athletes, competitions and contests are judobase ids.
 
 from datetime import date, datetime
 
-from sqlalchemy import ARRAY, DateTime, Index, Integer, Text
+from sqlalchemy import ARRAY, DateTime, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -225,6 +225,15 @@ class Record(SQLModel, table=True):
     value: float  # what the record is about: a score, weeks, a count, an age
     detail: dict | None = Field(default=None, sa_type=JSONB)  # e.g. gold/silver/bronze
     day: date | None = None  # when it happened
+    # The names shown with the row, written by the records job (see NAMES there).
+    family_name: str | None = Field(default=None, sa_type=Text)
+    given_name: str | None = Field(default=None, sa_type=Text)
+    gender: str | None = Field(default=None, sa_type=Text)
+    opponent_family_name: str | None = Field(default=None, sa_type=Text)
+    opponent_given_name: str | None = Field(default=None, sa_type=Text)
+    country: str | None = Field(default=None, sa_type=Text)  # the nation's code
+    country_name: str | None = Field(default=None, sa_type=Text)
+    competition: str | None = Field(default=None, sa_type=Text)
 
 
 class LeaderboardSnapshot(SQLModel, table=True):
@@ -232,8 +241,13 @@ class LeaderboardSnapshot(SQLModel, table=True):
     rating job (see ajr/rating/snapshot.py)."""
 
     __tablename__ = "leaderboard_snapshot"
-    # The top places of every weight (the home page).
-    __table_args__ = (Index("ix_leaderboard_snapshot_place", "place"), {"schema": SCHEMA})
+    __table_args__ = (
+        # The top places of every weight (the home page).
+        Index("ix_leaderboard_snapshot_place", "place"),
+        # A nation's best athletes (the country page).
+        Index("ix_leaderboard_snapshot_country_score", "country", text("score desc")),
+        {"schema": SCHEMA},
+    )
 
     weight: str = Field(primary_key=True)
     day: date
@@ -288,7 +302,8 @@ class AthleteSummary(SQLModel, table=True):
     """Per rated athlete, for the Explore lists; rebuilt by the rating job."""
 
     __tablename__ = "athlete_summary"
-    __table_args__ = {"schema": SCHEMA}
+    # A nation's athletes (the country page).
+    __table_args__ = (Index("ix_athlete_summary_country", "country"), {"schema": SCHEMA})
 
     athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
     weight: str | None = None
