@@ -1,0 +1,40 @@
+name: Watchdog
+
+# Update data has no schedule of its own: the Cloudflare Worker (cloudflare/) starts
+# it every 15 minutes. Should the Worker stop (an expired token, a failed deploy, an
+# account problem), nothing fails, so Alert stays silent. This checks every hour,
+# on GitHub's own schedule, that Update data started in the last 2 hours: if not, it
+# opens an issue "Update data is not running"; the first check after it runs again
+# closes it. (GitHub may start a scheduled workflow late, by up to an hour or so:
+# enough for a watchdog.)
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: Update data is not running
+      MAX_HOURS: 2
+    steps:
+      - name: Open or close the issue
+        run: |
+          last=$(gh run list --workflow update.yml --limit 1 --json createdAt --jq '.[0].createdAt // empty')
+          age=$(( ($(date +%s) - $(date -d "${last:-1970-01-01T00:00:00Z}" +%s)) / 3600 ))
+          echo "Last Update data run: ${last:-never} ($age h ago)"
+          issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
+                  --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ "$age" -lt "$MAX_HOURS" ]; then
+            [ -z "$issue" ] || gh issue close "$issue" --comment "Running again: last run $last."
+          elif [ -z "$issue" ]; then
+            gh issue create --title "$TITLE" --body "Update data last started at ${last:-never}, $age hours ago; the Cloudflare Worker \`ajr-update-trigger\` starts it every 15 minutes. Check the Worker's cron triggers and logs in the Cloudflare dashboard, and its GitHub token (cloudflare/README.md). Meanwhile a run can be started by hand: Actions → Update data → Run workflow."
+          fi
