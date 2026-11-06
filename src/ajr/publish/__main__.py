@@ -2,7 +2,9 @@
 
 The working copy is DATABASE_URL's database (where the jobs ran), production is
 PRODUCTION_DATABASE_URL's. In GitHub Actions, the changes are listed in the run's
-summary, and `publish` writes changed=true|false for the step that refreshes the site.
+summary, and `publish` writes changed=true|false for the step that refreshes the site
+and database_mb (production's size, after compacting what it rewrote for the most
+part) for the step that warns of the plan's limit.
 """
 
 import argparse
@@ -13,7 +15,7 @@ import sys
 import psycopg
 from sqlalchemy import make_url
 
-from ajr.publish import adopt, check, publish, site_changed
+from ajr.publish import adopt, check, compact, database_size, publish, site_changed
 
 
 def plain(url: str) -> str:
@@ -54,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
 
             published = publish(local, remote, args.dry_run)
             changes = [c for c in published if c.upserted or c.deleted]
+            compacted = [] if args.dry_run else compact(remote, changes)
+            size_mb = database_size(remote) >> 20
     summary(
         [f"### {'Would publish (dry run)' if args.dry_run else 'Published'}", ""]
         + (
@@ -65,11 +69,14 @@ def main(argv: list[str] | None = None) -> int:
             if changes
             else ["Nothing changed."]
         )
+        + (["", f"Compacted: {', '.join(compacted)}."] if compacted else [])
+        + ["", f"Production: {size_mb} MB."]
     )
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a") as file:
             refresh = site_changed(published) and not args.dry_run
             file.write(f"changed={'true' if refresh else 'false'}\n")
+            file.write(f"database_mb={size_mb}\n")
     return 0
 
 

@@ -11,9 +11,19 @@ from conftest import ROOT
 from sqlalchemy import create_engine, make_url, text
 from sqlmodel import Session
 
+import ajr.publish
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Competition, Contest, Country
-from ajr.publish import NOT_PUBLISHED, Change, check, publish, published_tables, site_changed
+from ajr.publish import (
+    NOT_PUBLISHED,
+    Change,
+    check,
+    compact,
+    database_size,
+    publish,
+    published_tables,
+    site_changed,
+)
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -250,3 +260,23 @@ def test_a_run_that_only_logged_itself_does_not_refresh_the_site(connections):
 
     run("update ajr.athlete set given_name = 'Hifumi' where id = 1")
     assert site_changed(publish(local, remote))
+
+
+def test_a_table_rewritten_for_the_most_part_is_compacted(connections, monkeypatch):
+    local, remote = connections
+    add_data()
+    changes = publish(local, remote)
+    monkeypatch.setattr(ajr.publish, "COMPACT_MIN_BYTES", 0)
+    monkeypatch.setattr(ajr.publish, "COMPACT_MIN_ROWS", 1)
+
+    # every row sent: compacted
+    assert compact(remote, [c for c in changes if c.table in ("athlete", "contest")]) == [
+        "athlete",
+        "contest",
+    ]
+    # 1 athlete of 3 sent: under COMPACT_SHARE
+    monkeypatch.setattr(ajr.publish, "COMPACT_SHARE", 0.5)
+    assert compact(remote, [Change("athlete", 1, 0, False)]) == []
+    assert compact(remote, [Change("contest", 0, 0, False)]) == []  # nothing sent
+    assert database_size(remote) > 0
+    assert_same(local, remote)
