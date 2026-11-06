@@ -73,6 +73,10 @@ class Competition(SQLModel, table=True):
     timezone: str | None = None
     is_teams: bool | None = None
     has_results: bool | None = None
+    ages: list[str] | None = Field(default=None, sa_type=ARRAY(Text))  # judobase's, e.g. ["sen"]
+    status: str | None = None  # judobase's; "-1": cancelled, a test event, a camp
+    # individual, team, age_group, kata, para, camp or military (ajr/sync/kinds.py)
+    kind: str = Field(default="individual", sa_type=Text)
     country_id: int | None = Field(default=None, foreign_key=fk("country"))
     olympic_cycle_id: int | None = Field(default=None, foreign_key=fk("olympic_cycle"), index=True)
     # judobase `updated_at_ts`, and its value when the contests were last synced.
@@ -83,6 +87,17 @@ class Competition(SQLModel, table=True):
     results_changed_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True), index=True
     )
+
+
+class ContestWalkover(SQLModel, table=True):
+    """A decided contest that was a walkover, not a fight (ajr/sync/walkovers.py):
+    reason "fusen" (judobase's Fusen-Gachi tag) or "likely" (nothing was fought)."""
+
+    __tablename__ = "contest_walkover"
+    __table_args__ = {"schema": SCHEMA}
+
+    contest_id: int = Field(foreign_key=fk("contest"), primary_key=True, ondelete="CASCADE")
+    reason: str = Field(sa_type=Text)
 
 
 class Contest(SQLModel, table=True):

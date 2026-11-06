@@ -67,7 +67,7 @@ def test_ids_are_passed_to_judobase():
 
     api = asyncio.run(scenario())
 
-    api.find_contests.assert_awaited_once_with(competition_id=5)
+    api.find_contests.assert_awaited_once_with(competition_id=5, include="info,events")
     api.get_judoka_info.assert_awaited_once_with(7)
 
 
@@ -75,7 +75,7 @@ def test_parallel_requests_are_limited():
     running = 0
     most_at_once = 0
 
-    async def slow_request(competition_id):
+    async def slow_request(competition_id, include="info"):
         nonlocal running, most_at_once
         running += 1
         most_at_once = max(most_at_once, running)

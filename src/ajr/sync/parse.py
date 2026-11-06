@@ -8,6 +8,7 @@ import judobase
 from judobase.schemas import WEIGHT_ID_MAPPING
 
 from ajr.core.models import Athlete, Competition, Contest, Country, WrlRanking
+from ajr.sync.kinds import kind
 
 # judobase weight category id -> name, e.g. 2 -> "-66" (the senior categories)
 WEIGHT_NAMES = {int(weight_id): weight.value for weight, weight_id in WEIGHT_ID_MAPPING.items()}
@@ -37,6 +38,9 @@ def competition(item: judobase.Competition) -> Competition:
         is_teams=item.is_teams,
         # judobase gives the number of results; we only need to know if there are any.
         has_results=bool(item.has_results),
+        ages=[age for age in item.ages or [] if age] or None,
+        status=text(item.status),
+        kind=kind(item),
         country_id=item.id_country,
         updated_at=item.updated_at_ts,
     )

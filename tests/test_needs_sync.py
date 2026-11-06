@@ -18,11 +18,13 @@ def make(
     has_results: bool = True,
     synced: bool = True,
     name: str = "Grand Slam",
+    kind: str = "individual",
 ) -> Competition:
     starts = TODAY + timedelta(days=starts_in_days)
     return Competition(
         id=1,
         name=name,
+        kind=kind,
         date_from=starts,
         date_to=starts + timedelta(days=days - 1),
         has_results=has_results,
@@ -60,9 +62,14 @@ def test_full_sync_takes_every_past_competition_with_results():
     assert not needs_sync(make(-100, has_results=False, synced=False), TODAY, full=True)
 
 
-@pytest.mark.parametrize("name", ["World Kata Championships", "Ne-Waza Open"])
-def test_events_without_fights_are_skipped(name):
-    assert not needs_sync(make(0, name=name), TODAY, full=True)
+@pytest.mark.parametrize("kind", ["kata", "camp", "team"])
+def test_events_without_fights_we_rate_are_skipped(kind):
+    assert not needs_sync(make(0, kind=kind), TODAY, full=True)
+
+
+@pytest.mark.parametrize("kind", ["individual", "para", "age_group", "military"])
+def test_other_events_are_fetched(kind):
+    assert needs_sync(make(0, kind=kind), TODAY, full=True)
 
 
 def test_competition_without_date_is_skipped():
