@@ -82,7 +82,9 @@ ATHLETE_SUMMARY = text("""
         where rc.next_fought_on > rc.fought_on and rc.weight is not null
         order by rc.athlete_id, rc.rating_after - s.rd_factor * rc.rd_after desc, rc.fought_on
     )
-    select rc.athlete_id, rc.weight, rc.fought_on, ct.competition_id, counted.contests,
+    -- weight: the table listing the athlete (their latest contest's, or the other one
+    -- they fight most in: ajr/rating/ranking.py), and their place in it
+    select rc.athlete_id, listed.weight, rc.fought_on, ct.competition_id, counted.contests,
            snapshot.place, snapshot.score,
            a.family_name, a.given_name, a.gender, co.ioc, a.dob_year, cm.name,
            weights.weights, peaks.score, peaks.fought_on, peaks.weight
@@ -94,7 +96,14 @@ ATHLETE_SUMMARY = text("""
     join counted on counted.athlete_id = rc.athlete_id
     left join weights on weights.athlete_id = rc.athlete_id
     left join peaks on peaks.athlete_id = rc.athlete_id
-    left join ajr.leaderboard_snapshot snapshot on snapshot.athlete_id = rc.athlete_id
+    cross join lateral (
+        select case when rc.listed_here then rc.weight
+                    else (select min(l.weight) from ajr.rating_listing l
+                          where l.contest_id = rc.contest_id and l.athlete_id = rc.athlete_id)
+               end as weight
+    ) listed
+    left join ajr.leaderboard_snapshot snapshot
+        on snapshot.athlete_id = rc.athlete_id and snapshot.weight = listed.weight
     where rc.next_fought_on = date '9999-12-31'
 """)
 

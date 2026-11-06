@@ -45,6 +45,7 @@ class ContestRecord:
     # Not judged when measuring predictions (nobody really fought), but still counted.
     bye: bool
     walkover: bool  # the contest lasted 0:00
+    competition_id: int | None = None  # for the tables: tournaments fought in a weight
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,8 @@ CONTESTS_QUERY = text("""
            end as day,
            ct.weight,
            ct.blue_id, ct.white_id, ct.winner_id = ct.blue_id as blue_won,
-           coalesce(ct.bye, false) as bye, ct.duration = '00:00:00' as walkover
+           coalesce(ct.bye, false) as bye, ct.duration = '00:00:00' as walkover,
+           ct.competition_id
     from ajr.contest ct
     join ajr.competition cm on cm.id = ct.competition_id
     where ct.winner_id is not null and ct.blue_id is not null and ct.white_id is not null

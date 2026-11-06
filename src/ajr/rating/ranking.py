@@ -10,12 +10,18 @@ root of the time), so a strong athlete who stops fighting would stay on top for
 years. So, like FIDE: after `hide_after_days` without contests the athlete leaves
 the table until the next contest.
 
+Which weights' tables list an athlete: every weight in which they fought at least
+`min_tournaments` tournaments in the `listing_days` before their latest contest;
+when there is none, the weight of their latest contest. So an athlete who fights in
+two weights stands in both, and a try-on of another weight (or a single tournament
+there) leaves them in their own. Open-category contests count for no weight.
+
 The site gets the same table from the database function ajr.board_at (see the
 "api for the site" migration); tests/test_leaderboard_parity.py keeps them equal.
 """
 
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 from ajr.rating.engine import ContestOutcome, RatingParams
 from ajr.rating.glicko2 import grow_rd
@@ -30,6 +36,8 @@ WEIGHTS = [
 class RankingParams:
     rd_factor: float = 3  # picked with `python -m ajr.rating.tune_ranking`
     hide_after_days: int | None = 365
+    min_tournaments: int = 3  # in a weight within listing_days, to stand in its table
+    listing_days: int = 365
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,39 @@ class AthleteState:
     rd: float
     last_day: date
     weight: str  # the weight category of the latest contest in one of WEIGHTS
+    weights: frozenset[str] | None = None  # the tables listing them (None: weight's)
+    # (day, competition, weight) of their recent contests in one of WEIGHTS
+    tournaments: tuple[tuple[date, int | None, str], ...] = field(default=(), compare=False)
+
+
+Tournament = tuple[date, int | None, str]  # (day, competition, weight)
+
+
+def listed_weights(
+    tournaments: tuple[Tournament, ...] | list[Tournament],
+    day: date,
+    weight: str | None,
+    ranking_params: RankingParams,
+) -> frozenset[str]:
+    """The weights whose tables list the athlete after their contest on `day` (see the
+    module's docstring); `weight`: their latest contest's category."""
+    since = day - timedelta(days=ranking_params.listing_days)
+    competitions: dict[str, set] = {}
+    for fought_on, competition_id, fought_in in tournaments:
+        if since < fought_on <= day:
+            competitions.setdefault(fought_in, set()).add(competition_id)
+    listed = frozenset(
+        w for w, c in competitions.items() if len(c) >= ranking_params.min_tournaments
+    )
+    return listed or (frozenset([weight]) if weight else frozenset())
+
+
+def recent(
+    tournaments: tuple[Tournament, ...], day: date, ranking_params: RankingParams
+) -> tuple[Tournament, ...]:
+    """The tournaments still within listing_days of `day`."""
+    since = day - timedelta(days=ranking_params.listing_days)
+    return tuple(t for t in tournaments if t[0] > since)
 
 
 @dataclass(frozen=True)
@@ -73,18 +114,30 @@ def standing(
     )
 
 
-def update_states(states: dict[int, AthleteState], outcome: ContestOutcome) -> None:
+def update_states(
+    states: dict[int, AthleteState],
+    outcome: ContestOutcome,
+    ranking_params: RankingParams | None = None,
+) -> None:
     """Both athletes after the contest. An open-weight contest keeps their category."""
+    ranking_params = ranking_params or RankingParams()
     contest = outcome.contest
     for athlete_id, after in (
         (contest.blue_id, outcome.blue_after),
         (contest.white_id, outcome.white_after),
     ):
         weight = contest.weight if contest.weight in WEIGHTS else None
-        if weight is None and athlete_id in states:
-            weight = states[athlete_id].weight
+        before = states.get(athlete_id)
+        tournaments = recent(before.tournaments, contest.day, ranking_params) if before else ()
         if weight is not None:
-            states[athlete_id] = AthleteState(after.rating, after.rd, contest.day, weight)
+            tournaments += ((contest.day, contest.competition_id, weight),)
+        else:
+            weight = before.weight if before else None
+        if weight is not None:
+            weights = listed_weights(tournaments, contest.day, weight, ranking_params)
+            states[athlete_id] = AthleteState(
+                after.rating, after.rd, contest.day, weight, weights, tournaments
+            )
 
 
 def leaderboards(
@@ -100,7 +153,8 @@ def leaderboards(
             continue
         place = standing(athlete_id, state, day, rating_params, ranking_params)
         if place is not None:
-            tables[state.weight].append(place)
+            for weight in state.weights or (state.weight,):
+                tables[weight].append(place)
     for table in tables.values():
         table.sort(key=lambda place: place.score, reverse=True)
     return tables

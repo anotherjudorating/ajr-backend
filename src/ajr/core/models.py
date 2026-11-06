@@ -5,7 +5,7 @@ Ids of countries, athletes, competitions and contests are judobase ids.
 
 from datetime import date, datetime
 
-from sqlalchemy import ARRAY, DateTime, Index, Integer, Text, text
+from sqlalchemy import ARRAY, DateTime, ForeignKeyConstraint, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -156,7 +156,13 @@ class RatingChange(SQLModel, table=True):
             "ix_rating_change_weight_fought_on_board",
             "weight",
             "fought_on",
-            postgresql_include=["next_fought_on", "athlete_id", "rating_after", "rd_after"],
+            postgresql_include=[
+                "next_fought_on",
+                "athlete_id",
+                "rating_after",
+                "rd_after",
+                "listed_here",
+            ],  # fmt: skip
         ),
         # An athlete's history.
         Index("ix_rating_change_athlete_id_fought_on", "athlete_id", "fought_on"),
@@ -183,6 +189,39 @@ class RatingChange(SQLModel, table=True):
     rating_after: float
     rd_after: float
     volatility_after: float
+    # Whether the table of `weight` lists the athlete from this contest on (see
+    # ajr/rating/ranking.py); the other tables listing them are in rating_listing.
+    listed_here: bool = True
+
+
+class RatingListing(SQLModel, table=True):
+    """Another weight whose table lists the athlete from a contest on, besides the
+    contest's own category (an athlete fighting in two weights)."""
+
+    __tablename__ = "rating_listing"
+    __table_args__ = (
+        Index(
+            "ix_rating_listing_weight_fought_on",
+            "weight",
+            "fought_on",
+            postgresql_include=["next_fought_on", "athlete_id", "rating_after", "rd_after"],
+        ),
+        ForeignKeyConstraint(
+            ["contest_id", "athlete_id"],
+            [f"{SCHEMA}.rating_change.contest_id", f"{SCHEMA}.rating_change.athlete_id"],
+            ondelete="CASCADE",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    contest_id: int = Field(primary_key=True)
+    athlete_id: int = Field(primary_key=True)
+    weight: str = Field(primary_key=True)
+    # as the rating_change row's (copied, so that a table is read from the index)
+    fought_on: date
+    next_fought_on: date
+    rating_after: float
+    rd_after: float
 
 
 class RatingSettings(SQLModel, table=True):
@@ -201,6 +240,8 @@ class RatingSettings(SQLModel, table=True):
     move_handicap: float  # on a change of weight category: share of the rating
     rd_factor: float  # leaderboard score = rating - rd_factor * RD
     hide_after_days: int | None  # not in the table after this many days without contests
+    min_tournaments: int  # in a weight within listing_days, to stand in its table
+    listing_days: int
 
 
 class WrlRanking(SQLModel, table=True):
