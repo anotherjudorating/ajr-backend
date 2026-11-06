@@ -1,7 +1,8 @@
 """Records that need every week's tables: who was #1 of a weight and of pound for
-pound, and the nations' team ratings. Like "weeks at No. 1" in tennis, the tables
-are looked at every Sunday; the ratings are built from the first contest on, the
-records counted from RATINGS_SINCE, when they had settled.
+pound and for how long (in total, and the longest run of weeks in a row), who stood
+in the top 10, the nations' team ratings and their deepest teams. Like "weeks at
+No. 1" in tennis, the tables are looked at every Sunday; the ratings are built from
+the first contest on, the records counted from RATINGS_SINCE, when they had settled.
 
 A weight counts in a week only with at least MIN_TABLE athletes in its table, so
 thin tables don't make champions of a handful of athletes.
@@ -18,6 +19,7 @@ from ajr.rating.ranking import WEIGHTS, AthleteState, RankingParams, Standing, l
 from ajr.records.queries import RATINGS_SINCE
 
 MIN_TABLE = 20
+TOP_10 = 10
 WEEK = timedelta(days=7)
 SINCE = date.fromisoformat(RATINGS_SINCE)
 GENDERS = {"male": WEIGHTS[:7], "female": WEIGHTS[7:]}
@@ -37,14 +39,42 @@ STATES_QUERY = text("""
 """)
 
 
+class Runs:
+    """Weeks in a row (at #1, in the top 10): each athlete's current run and best one."""
+
+    def __init__(self) -> None:
+        self.current: dict[int, tuple[int, date, date, Counter[str]]] = {}
+        self.best: dict[int, tuple[int, date, date, str]] = {}  # weeks, from, to, weight
+
+    def week(self, sunday: date, athletes: dict[int, str]) -> None:
+        for athlete_id, weight in athletes.items():
+            weeks, start, last, weights = self.current.get(athlete_id, (0, sunday, None, None))
+            if last != sunday - WEEK:  # broken: a new run
+                weeks, start, weights = 0, sunday, Counter()
+            weights[weight] += 1
+            weeks += 1
+            self.current[athlete_id] = (weeks, start, sunday, weights)
+            if weeks > self.best.get(athlete_id, (0,))[0]:
+                self.best[athlete_id] = (weeks, start, sunday, weights.most_common(1)[0][0])
+
+    def records(self) -> list[dict]:
+        return [
+            record(athlete_id=a, value=weeks, day=to, weight=weight, detail={"from": str(start)})
+            for a, (weeks, start, to, weight) in self.best.items()
+        ]
+
+
 def weekly_records(
     connection: Connection,
     rating: RatingParams,
     ranking: RankingParams,
     today: date,
     nation_history: list[dict] | None = None,
+    places: list[tuple] | None = None,
 ) -> dict[str, list[dict]]:
-    """The records; every week's mixed nations ranking goes to `nation_history`."""
+    """The records; every week's mixed nations ranking goes to `nation_history`, and
+    every Sunday's top 10 of every weight, (sunday, weight, athlete, place), to
+    `places` (for the records of contests against a top-10 athlete)."""
     rows = connection.execute(STATES_QUERY).all()
     if not rows:
         return {}
@@ -59,11 +89,13 @@ def weekly_records(
     weeks_p4p: Counter[int] = Counter()
     weights_p4p: dict[int, Counter[str]] = defaultdict(Counter)
     last_p4p: dict[int, date] = {}
-    first_p4p: dict[int, tuple[date, str]] = {}
     p4p_lead: dict[int, tuple[float, date, str]] = {}
-    nation_weeks: Counter[int] = Counter()
-    nation_last: dict[int, date] = {}
     team_best: dict[int, tuple[float, date]] = {}
+    runs_at_1, runs_p4p, runs_top_10 = Runs(), Runs(), Runs()
+    weeks_top_10: Counter[int] = Counter()
+    weights_top_10: dict[int, Counter[str]] = defaultdict(Counter)
+    last_top_10: dict[int, date] = {}
+    deepest: dict[int, tuple[int, int, date]] = {}  # nation -> athletes, weights, sunday
 
     states: dict[int, AthleteState] = {}
     first_day = rows[0].fought_on
@@ -91,13 +123,37 @@ def weekly_records(
             if len(table) >= MIN_TABLE
         }
 
+        at_1: dict[int, str] = {}
+        top_10: dict[int, str] = {}  # an athlete in two weights' top 10 counts once
         for weight, table in tables.items():
             athlete_id = table[0].athlete_id
             weeks_at_1[athlete_id] += 1
             weights_at_1[athlete_id][weight] += 1
             last_at_1[athlete_id] = sunday
             first_at_1.setdefault(athlete_id, (sunday, weight))
+            at_1.setdefault(athlete_id, weight)
+            for place, standing in enumerate(table[:TOP_10], start=1):
+                top_10.setdefault(standing.athlete_id, weight)
+                if places is not None:
+                    places.append((sunday, weight, standing.athlete_id, place))
+        runs_at_1.week(sunday, at_1)
+        runs_top_10.week(sunday, top_10)
+        for athlete_id, weight in top_10.items():
+            weeks_top_10[athlete_id] += 1
+            weights_top_10[athlete_id][weight] += 1
+            last_top_10[athlete_id] = sunday
+        athletes_of: Counter[int] = Counter()
+        weights_of: dict[int, set[str]] = defaultdict(set)
+        for athlete_id, weight in top_10.items():
+            nation = country.get(athlete_id)
+            if nation is not None:
+                athletes_of[nation] += 1
+                weights_of[nation].add(weight)
+        for nation, count in athletes_of.items():
+            if count > deepest.get(nation, (0,))[0]:
+                deepest[nation] = (count, len(weights_of[nation]), sunday)
 
+        p4p_1: dict[int, str] = {}
         for weights in GENDERS.values():
             leader = p4p_leader({w: t for w, t in tables.items() if w in weights})
             if leader is None:
@@ -106,17 +162,15 @@ def weekly_records(
             weeks_p4p[athlete_id] += 1
             weights_p4p[athlete_id][weight] += 1
             last_p4p[athlete_id] = sunday
-            first_p4p.setdefault(athlete_id, (sunday, weight))
+            p4p_1[athlete_id] = weight
             if athlete_id not in p4p_lead or gap > p4p_lead[athlete_id][0]:
                 p4p_lead[athlete_id] = (gap, sunday, weight)
+        runs_p4p.week(sunday, p4p_1)
 
         if len(tables) == 14:  # team ratings only when every weight has a table
             ratings = team_ratings(tables, country)
             if nation_history is not None:
                 nation_history.extend(nations_ranking(ratings, sunday))
-            best_nation = max(ratings, key=ratings.get)
-            nation_weeks[best_nation] += 1
-            nation_last[best_nation] = sunday
             for nation, score in ratings.items():
                 if nation not in team_best or score > team_best[nation][0]:
                     team_best[nation] = (score, sunday)
@@ -152,11 +206,17 @@ def weekly_records(
             ],
             best="high",
         ),
-        "youngest_p4p_1": ranked(
-            [record(athlete_id=a, value=age, day=day, weight=weight)
-             for a, (age, day, weight) in ages(first_p4p).items()],
-            best="low",
+        "longest_at_1_run": ranked(runs_at_1.records(), best="high"),
+        "longest_p4p_1_run": ranked(runs_p4p.records(), best="high"),
+        "most_weeks_in_top_10": ranked(
+            [
+                record(athlete_id=a, value=weeks, day=last_top_10[a],
+                       weight=weights_top_10[a].most_common(1)[0][0])
+                for a, weeks in weeks_top_10.items()
+            ],
+            best="high",
         ),
+        "most_weeks_in_top_10_run": ranked(runs_top_10.records(), best="high"),
         "biggest_p4p_lead": ranked(
             [record(athlete_id=a, value=gap, day=day, weight=weight)
              for a, (gap, day, weight) in p4p_lead.items()],
@@ -166,9 +226,9 @@ def weekly_records(
             [record(country_id=n, value=score, day=day) for n, (score, day) in team_best.items()],
             best="high",
         ),
-        "longest_at_1_nation": ranked(
-            [record(country_id=n, value=weeks, day=nation_last[n])
-             for n, weeks in nation_weeks.items()],
+        "deepest_team": ranked(
+            [record(country_id=n, value=count, day=day, detail={"weights": weights})
+             for n, (count, weights, day) in deepest.items()],
             best="high",
         ),
     }  # fmt: skip

@@ -7,7 +7,9 @@ from sqlalchemy import func, update
 from sqlmodel import Session
 
 from ajr.core.db import engine
+from ajr.core.job_run import job_run
 from ajr.core.models import Athlete, Competition, Contest
+from ajr.rating.job import run_rating
 from ajr.records import weekly
 from ajr.records.job import run_records
 from tests.test_api import add_data, add_moves, call
@@ -56,10 +58,10 @@ def test_records():
     [streak] = [row for row in records["longest_winning_streak"] if row["athlete_id"] == 1]
     assert streak["value"] == 2
     assert records["highest_rating"][0]["family_name"].startswith("NAME")
-    assert all(row["detail"]["contest"] for row in records["biggest_upsets"])
-    rivalry = records["most_frequent_rivalry"][0]
-    assert rivalry["value"] == 1 and rivalry["opponent_id"] is not None
-    assert rivalry["opponent_family_name"].startswith("NAME")
+    # over a top-10 athlete only: the tables are too thin here (see test_weekly_records)
+    assert "biggest_upsets" not in records
+    assert records["most_world_tour_golds"][0]["athlete_id"] == 1
+    assert records["youngest_grand_slam_gold"][0]["athlete_id"] == 1
     # the names come with every row, written by the job
     athletes = [row for rows in records.values() for row in rows if row["athlete_id"]]
     assert all(row["family_name"] and row["country"] for row in athletes)
@@ -94,7 +96,17 @@ def test_weekly_records(monkeypatch):
     assert records["youngest_1"][0]["athlete_id"] == 1
     # pound for pound #1 is always one of the weights' leaders
     assert {row["athlete_id"] for row in records["longest_p4p_1"]} <= set(at_1)
-    assert records["youngest_p4p_1"] and records["biggest_p4p_lead"][0]["value"] > 0
+    assert records["biggest_p4p_lead"][0]["value"] > 0
+    # in a row never more than in total
+    total = {row["athlete_id"]: row["value"] for row in records["longest_at_1"]}
+    assert all(row["value"] <= total[row["athlete_id"]] for row in records["longest_at_1_run"])
+    top_10 = {row["athlete_id"]: row["value"] for row in records["most_weeks_in_top_10"]}
+    assert set(at_1) <= set(top_10)
+    assert all(row["value"] <= top_10[row["athlete_id"]]
+               for row in records["most_weeks_in_top_10_run"])  # fmt: skip
+    assert records["deepest_team"][0]["country"] == "JPN"
+    # the upsets over a top-10 athlete, from those tables
+    assert all(row["detail"]["opponent_place"] <= 10 for row in records.get("biggest_upsets", []))
     assert "biggest_lead" not in records
     assert "highest_team_rating" not in records  # needs a table in every weight
     # the rows computed in Python get their names too
@@ -105,13 +117,15 @@ def test_records_replace_the_old_ones():
     prepare()
     run_records()
     with Session(engine) as session:
-        session.add(Contest(id=999, competition_id=10, blue_id=2, white_id=3, winner_id=2,
+        session.add(Contest(id=999, competition_id=30, blue_id=1, white_id=3, winner_id=3,
                             weight="-73", round=2, round_name="Quarter-Final"))  # fmt: skip
         session.commit()
+    with job_run("rating"):
+        run_rating(full=True)
     run_records()
 
-    rows = call("select * from api.record('most_frequent_rivalry')")
-    assert len({(row["athlete_id"], row["opponent_id"]) for row in rows}) == len(rows)
+    rows = call("select * from api.record('longest_rivalry')")
+    assert rows and len({(row["athlete_id"], row["opponent_id"]) for row in rows}) == len(rows)
 
 
 def test_ranked_ties_share_a_place():
