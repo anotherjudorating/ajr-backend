@@ -399,3 +399,82 @@ def test_unchanged_world_ranking_is_not_rewritten(judobase, caplog):
 
     assert "World ranking" not in caplog.text
     assert wrl() == {(100, "-73"): (1, 5000)}
+
+
+# --- athletes' second ids -------------------------------------------------------
+
+
+@pytest.fixture
+def aliases(monkeypatch, tmp_path):
+    """An aliases file in which athlete 300 is a second id of athlete 100."""
+    path = tmp_path / "athlete_aliases.csv"
+    path.write_text("alias_id,athlete_id,name,note\n300,100,NAME100,a second profile\n")
+    monkeypatch.setattr(job, "ALIASES_FILE", path)
+    return path
+
+
+def test_an_alias_is_saved_as_the_main_id(judobase, aliases):
+    add_past_competition(judobase)  # athletes 100, 200, 300 seen for the first time
+    sync()  # the aliases are loaded once both athletes exist
+
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    sync()  # contest 12 (200 v 300) comes again from judobase, with id 300
+
+    contests = stored(Contest)
+    assert (contests[12].blue_id, contests[12].white_id, contests[12].winner_id) == (200, 100, 100)
+    assert set(stored(Athlete)) == {100, 200, 300}  # the second profile stays
+
+
+def test_contests_saved_before_an_alias_move_to_the_main_id(judobase, aliases, monkeypatch):
+    add_past_competition(judobase)
+    empty = aliases.parent / "none.csv"
+    empty.write_text("alias_id,athlete_id,name,note\n")
+    monkeypatch.setattr(job, "ALIASES_FILE", empty)
+    sync()
+    first_mark = results_changed_at()
+    assert stored(Contest)[12].white_id == 300
+
+    monkeypatch.setattr(job, "ALIASES_FILE", aliases)
+    sync()  # judobase unchanged: only the aliases file is new
+
+    contest_12 = stored(Contest)[12]
+    assert (contest_12.white_id, contest_12.winner_id) == (100, 100)
+    moved_mark = results_changed_at()
+    assert moved_mark > first_mark  # the rating rates it again
+    sync()
+    assert results_changed_at() == moved_mark  # the next run finds nothing to move
+
+
+def test_a_contest_between_two_ids_of_one_athlete_is_left_out(judobase, aliases):
+    add_past_competition(judobase)
+    sync()
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    judobase.contests_of[1].append(contest(13, 1, blue=100, white=300, winner=100))
+
+    sync()
+
+    assert 13 not in stored(Contest)
+
+
+def test_the_world_ranking_lists_the_main_id(judobase, aliases):
+    add_past_competition(judobase)
+    sync()
+    judobase.ranking = [
+        ranking_entry(300, weight_id=3, place=4, points=2000),
+        ranking_entry(100, weight_id=3, place=7, points=1000),
+    ]
+
+    sync()
+
+    assert wrl() == {(100, "-73"): (4, 2000)}
+
+
+def test_the_aliases_file_names_each_second_id_once_and_never_a_chain():
+    import csv
+
+    with job.ALIASES_FILE.open(newline="") as file:
+        rows = [(int(r["alias_id"]), int(r["athlete_id"])) for r in csv.DictReader(file)]
+    aliases = [alias for alias, _ in rows]
+    assert len(aliases) == len(set(aliases))
+    assert all(alias != main for alias, main in rows)
+    assert not {main for _, main in rows} & set(aliases)  # a main id is never an alias

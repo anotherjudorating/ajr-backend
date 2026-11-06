@@ -69,6 +69,7 @@ CONTESTS_QUERY = text("""
     from ajr.contest ct
     join ajr.competition cm on cm.id = ct.competition_id
     where ct.winner_id is not null and ct.blue_id is not null and ct.white_id is not null
+      and ct.blue_id <> ct.white_id  -- never one athlete against themself (athlete_alias)
       and cm.date_from is not null
       and (cast(:since as date) is null or cm.date_from >= :since)
     order by cm.date_from, cm.id, ct.weight, ct.round desc nulls last, ct.fight_no, ct.id

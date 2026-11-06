@@ -1,7 +1,8 @@
 """Copy judobase into our database.
 
 Order of work:
-1. Olympic cycles (from a local file), countries and competitions are saved every run.
+1. Olympic cycles (from a local file), countries and competitions are saved every run,
+   and the athletes' second ids (from a local file, see save_aliases).
 2. Contests are fetched only for competitions that need it:
    - competitions happening now or in the next two weeks (draws and live results),
    - past competitions whose data changed in judobase since we last saved them,
@@ -16,6 +17,7 @@ the same result, and a crashed run simply continues where it stopped.
 """
 
 import asyncio
+import csv
 import json
 import logging
 from collections.abc import Collection
@@ -28,13 +30,21 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, SQLModel
 
 from ajr.core.db import engine
-from ajr.core.models import Athlete, Competition, Contest, OlympicCycle, WrlRanking
+from ajr.core.models import (
+    Athlete,
+    AthleteAlias,
+    Competition,
+    Contest,
+    OlympicCycle,
+    WrlRanking,
+)
 from ajr.sync import parse
 from ajr.sync.client import JudobaseClient
 
 logger = logging.getLogger(__name__)
 
 OLYMPIC_GAMES_FILE = Path(__file__).parent / "data" / "olympic_games.json"
+ALIASES_FILE = Path(__file__).parent / "data" / "athlete_aliases.csv"
 DRAW_LOOKAHEAD = timedelta(days=14)
 LIVE_GRACE = timedelta(days=2)  # results keep arriving for a couple of days
 COMPETITIONS_PER_BATCH = 16
@@ -51,6 +61,7 @@ async def run_sync(full: bool = False) -> list[Competition]:
             save_olympic_cycles(session)
             country_ids = save_countries(session, await client.countries())
             save_competitions(session, await client.competitions(), country_ids)
+            aliases = save_aliases(session)
             session.commit()
             competitions = pick_competitions_to_sync(session, today, full)
             announced = {c.id for c in pick_competitions_to_sync(session, today, False)}
@@ -64,7 +75,7 @@ async def run_sync(full: bool = False) -> list[Competition]:
                 if contests is None:
                     continue
                 changed = await save_competition_contests(
-                    client, competition, contests, known_athletes, country_ids
+                    client, competition, contests, known_athletes, country_ids, aliases
                 )
                 if changed and competition.id not in announced:
                     unannounced.append(competition)
@@ -74,7 +85,7 @@ async def run_sync(full: bool = False) -> list[Competition]:
                 len(competitions),
             )
 
-        await save_world_ranking(client, known_athletes)
+        await save_world_ranking(client, known_athletes, aliases)
 
     if unannounced:
         logger.warning(
@@ -135,6 +146,50 @@ def save_competitions(
         competitions.append(competition)
     # These columns are ours: never overwritten by judobase data.
     upsert(session, competitions, keep_columns={"contests_synced_for", "results_changed_at"})
+
+
+def save_aliases(session: Session) -> dict[int, int]:
+    """Load the athletes' second ids (alias -> main id) from ALIASES_FILE, and write the
+    main id in the contests that still have an alias, marking their competitions
+    changed so the rating rates them again.
+
+    judobase opens a new profile when an athlete changes nations, and sometimes enters
+    one twice at a tournament; the file lists the ids checked to be one person. An
+    alias or main id we don't have (yet) is left out until the athlete is synced.
+    """
+    with ALIASES_FILE.open(newline="") as file:
+        listed = {int(row["alias_id"]): int(row["athlete_id"]) for row in csv.DictReader(file)}
+    have = set(
+        session.scalars(
+            select(Athlete.id).where(Athlete.id.in_(set(listed) | set(listed.values())))
+        )
+    )
+    aliases = {alias: main for alias, main in listed.items() if alias in have and main in have}
+
+    saved = {a.alias_id: a.athlete_id for a in session.scalars(select(AthleteAlias))}
+    if saved != aliases:
+        session.execute(delete(AthleteAlias))
+        upsert(session, [AthleteAlias(alias_id=a, athlete_id=m) for a, m in aliases.items()])
+        logger.info("Athlete aliases: %d saved", len(aliases))
+
+    changed: set[int] = set()
+    for column in (Contest.white_id, Contest.blue_id, Contest.winner_id):
+        alias = AthleteAlias.__table__.c
+        result = session.execute(
+            update(Contest)
+            .where(column == alias.alias_id)
+            .values({column.key: alias.athlete_id})
+            .returning(Contest.competition_id)
+        )
+        changed.update(result.scalars())
+    if changed:
+        session.execute(
+            update(Competition)
+            .where(Competition.id.in_(changed))
+            .values(results_changed_at=func.now())  # the rating picks it up
+        )
+        logger.info("Athlete aliases: contests of %d competitions moved to main ids", len(changed))
+    return aliases
 
 
 def find_cycle(cycles: list[OlympicCycle], day: date | None) -> int | None:
@@ -200,8 +255,12 @@ async def save_competition_contests(
     items: list[judobase.Contest],
     known_athletes: set[int],
     country_ids: set[int],
+    aliases: dict[int, int] | None = None,
 ) -> bool:
-    """Whether the results changed (what the rating reads of them)."""
+    """Whether the results changed (what the rating reads of them).
+
+    An athlete's second id (`aliases`) is saved as their main id."""
+    aliases = aliases or {}
     if not items:
         with Session(engine) as session:
             saved = session.scalar(
@@ -224,6 +283,14 @@ async def save_competition_contests(
     for item in items:
         contest = parse.contest(item)
         if contest.competition_id != competition.id:
+            continue
+        contest.blue_id = aliases.get(contest.blue_id, contest.blue_id)
+        contest.white_id = aliases.get(contest.white_id, contest.white_id)
+        contest.winner_id = aliases.get(contest.winner_id, contest.winner_id)
+        if contest.blue_id is not None and contest.blue_id == contest.white_id:
+            logger.warning(
+                "Contest %s: both sides are athlete %s, left out", contest.id, contest.blue_id
+            )
             continue
         if contest.winner_id is not None and contest.winner_id not in (
             contest.blue_id,
@@ -311,7 +378,9 @@ def remove_missing_contests(session: Session, competition_id: int, contest_ids: 
 # --- world ranking list -------------------------------------------------------
 
 
-async def save_world_ranking(client: JudobaseClient, known_athletes: set[int]) -> None:
+async def save_world_ranking(
+    client: JudobaseClient, known_athletes: set[int], aliases: dict[int, int] | None = None
+) -> None:
     """Replace our copy of the WRL when judobase's list changed.
 
     Athletes we don't have are left out (we couldn't show them anyway). An error or
@@ -322,7 +391,16 @@ async def save_world_ranking(client: JudobaseClient, known_athletes: set[int]) -
     except Exception as error:
         logger.error("World ranking: could not fetch it: %r", error)
         return
-    entries = [entry for entry in map(parse.wrl_entry, items) if entry.athlete_id in known_athletes]
+    entries = []
+    for entry in map(parse.wrl_entry, items):
+        entry.athlete_id = (aliases or {}).get(entry.athlete_id, entry.athlete_id)
+        if entry.athlete_id in known_athletes:
+            entries.append(entry)
+    # an athlete listed under both ids keeps the better place
+    best = {}
+    for entry in sorted(entries, key=lambda e: e.place):
+        best.setdefault((entry.athlete_id, entry.weight), entry)
+    entries = list(best.values())
     if not entries:
         logger.warning("World ranking: judobase returned no entries, keeping ours")
         return

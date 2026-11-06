@@ -37,6 +37,19 @@ class Athlete(SQLModel, table=True):
     country_id: int | None = Field(default=None, foreign_key=fk("country"), index=True)
 
 
+class AthleteAlias(SQLModel, table=True):
+    """A second judobase id of an athlete (judobase opens a new profile when an athlete
+    changes nations, and sometimes enters one twice at a tournament): the sync writes
+    the main id in its contests instead, so the athlete has one rating history. Loaded
+    from ajr/sync/data/athlete_aliases.csv by the sync."""
+
+    __tablename__ = "athlete_alias"
+    __table_args__ = {"schema": SCHEMA}
+
+    alias_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
+    athlete_id: int = Field(foreign_key=fk("athlete"))  # the id fought under last
+
+
 class OlympicCycle(SQLModel, table=True):
     __tablename__ = "olympic_cycle"
     __table_args__ = {"schema": SCHEMA}
