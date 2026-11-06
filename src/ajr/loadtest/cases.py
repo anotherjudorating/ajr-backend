@@ -10,20 +10,6 @@ WEIGHTS = [
     "-60", "-66", "-73", "-81", "-90", "-100", "+100",
     "-48", "-52", "-57", "-63", "-70", "-78", "+78",
 ]  # fmt: skip
-SEARCHES = [
-    "abe",
-    "kim",
-    "kim min",
-    "heyd",
-    "jap",
-    "JPN",
-    "tokyo",
-    "grand slam",
-    "x",
-    "",
-    "zzzqqq",
-    "a" * 60,
-]
 
 
 @dataclass(frozen=True)
@@ -179,13 +165,8 @@ async def build(api: Api, rng: random.Random) -> list[Case]:
         cases += [Case("record", {"name": name, "for_gender": g}) for g in (None, "male", "female")]
         cases.append(Case("record", {"name": name, "only_weight": "-73"}))
 
-    # search and head-to-head
-    cases += [Case("search", {"q": q}) for q in SEARCHES]
-    cases += [
-        Case("search_athletes", {"q": q, "only_weight": w, "top": 8})
-        for q in SEARCHES
-        for w in (None, "-73")
-    ]
+    # search (in the browser, from one index) and head-to-head
+    cases.append(Case("search_index", {}))
     leaders = [r["athlete_id"] for r in board[:4]]
     cases += [Case("popular_matchups", {"fallback": leaders, "top": t}) for t in (5, 1)]
     a, b = sorted(rng.sample(leaders, 2))
