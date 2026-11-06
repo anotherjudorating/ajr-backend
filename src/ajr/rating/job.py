@@ -30,10 +30,10 @@ from sqlalchemy import delete, func, select, text, update
 from sqlmodel import Session
 
 from ajr.core.db import engine
-from ajr.core.models import Competition, JobRun, RatingChange, RatingSettings
-from ajr.rating.engine import ContestOutcome, RatingParams, load_contests, run
+from ajr.core.models import Competition, JobRun, RatingChange, RatingListing, RatingSettings
+from ajr.rating.engine import MEN, WOMEN, ContestOutcome, RatingParams, load_contests, run
 from ajr.rating.glicko2 import Rating
-from ajr.rating.ranking import WEIGHTS, RankingParams
+from ajr.rating.ranking import WEIGHTS, RankingParams, Tournament, listed_weights, recent
 from ajr.rating.snapshot import refresh_contest_list, refresh_snapshot
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,10 @@ COLUMNS = [
     "contest_id", "athlete_id", "seq", "opponent_id", "fought_on", "next_fought_on",
     "weight", "won", "win_probability",
     "rating_before", "rd_before", "volatility_before",
-    "rating_after", "rd_after", "volatility_after",
+    "rating_after", "rd_after", "volatility_after", "listed_here",
+]  # fmt: skip
+LISTING_COLUMNS = [
+    "contest_id", "athlete_id", "weight", "fought_on", "next_fought_on", "rating_after", "rd_after",
 ]  # fmt: skip
 
 
@@ -65,10 +68,10 @@ def run_rating(
     with Session(engine) as session:
         corrected = 0
         if needs_full_run(session, params, ranking):
-            rate_everything(session, params)
+            rate_everything(session, params, ranking)
             refresh_contest_list(session, None)
         elif full:
-            corrected = rate_everything(session, params, compare=True)
+            corrected = rate_everything(session, params, ranking, compare=True)
             refresh_contest_list(session, None)
         else:
             since = first_changed_competition_day(session)
@@ -80,7 +83,7 @@ def run_rating(
                 check_rating(session)
                 session.commit()
                 return RatingRun(changed=site_visible_state(session) != before)
-            rate_since(session, since, params)
+            rate_since(session, since, params, ranking)
             refresh_contest_list(session, since.year)
         session.merge(settings(params, ranking))
         refresh_snapshot(session)
@@ -158,6 +161,8 @@ def settings(params: RatingParams, ranking: RankingParams) -> RatingSettings:
         **asdict(params),
         rd_factor=ranking.rd_factor,
         hide_after_days=ranking.hide_after_days,
+        min_tournaments=ranking.min_tournaments,
+        listing_days=ranking.listing_days,
     )
 
 
@@ -192,16 +197,18 @@ def first_changed_competition_day(session: Session) -> date | None:
     )
 
 
-def rate_everything(session: Session, params: RatingParams, compare: bool = False) -> int:
+def rate_everything(
+    session: Session, params: RatingParams, ranking: RankingParams, compare: bool = False
+) -> int:
     """With `compare`: how many rows differ from the history there was (seq aside,
     which only numbers them)."""
     contests = load_contests(session.connection())
-    rows = rating_change_rows(run(contests, params))
+    rows = rating_change_rows(run(contests, params), ranking=ranking)
     logger.info("Full run: %d rating changes from %d contests", len(rows), len(contests))
     corrected = differences(session, rows) if compare else 0
     if corrected:
         logger.warning("The history differed from a full run in %d rows: corrected", corrected)
-    session.execute(delete(RatingChange))
+    session.execute(delete(RatingChange))  # and their rating_listing rows
     copy_rows(session, rows)
     # the planner's statistics of the new rows, for the lists built from them next
     session.execute(text("analyze ajr.rating_change"))
@@ -247,7 +254,29 @@ LATEST_ROWS_BEFORE_QUERY = text("""
 """)
 
 
-def rate_since(session: Session, since: date, params: RatingParams) -> None:
+# Each athlete's weight category of their latest contest in one before those (a move
+# from it changes the rating: ajr/rating/engine.py).
+LAST_WEIGHT_BEFORE_QUERY = text("""
+    select distinct on (athlete_id) athlete_id, weight
+    from ajr.rating_change
+    where seq < :first_seq and weight = any(cast(:weights as text[]))
+    order by athlete_id, seq desc
+""")
+
+
+# Each athlete's tournaments in a weight category within listing_days before those
+# (which tables list them: ajr/rating/ranking.py).
+TOURNAMENTS_BEFORE_QUERY = text("""
+    select rc.athlete_id, rc.fought_on, ct.competition_id, ct.weight
+    from ajr.rating_change rc
+    join ajr.contest ct on ct.id = rc.contest_id
+    where rc.seq < :first_seq and rc.fought_on > cast(:since as date) - :days
+      and ct.weight = any(cast(:weights as text[]))
+    order by rc.seq
+""")
+
+
+def rate_since(session: Session, since: date, params: RatingParams, ranking: RankingParams) -> None:
     connection = session.connection()
     # Read ratings back exactly: with fewer digits (the Supabase pooler's default) the
     # rounding would carry on through every later contest.
@@ -258,10 +287,27 @@ def rate_since(session: Session, since: date, params: RatingParams) -> None:
         for row in connection.execute(LATEST_ROWS_BEFORE_QUERY, {"first_seq": first_seq})
     }
 
+    last_weight = dict(
+        connection.execute(
+            LAST_WEIGHT_BEFORE_QUERY, {"first_seq": first_seq, "weights": [*MEN, *WOMEN]}
+        ).all()
+    )
     start = {
-        athlete_id: (Rating(row.rating_after, row.rd_after, row.volatility_after), row.fought_on)
+        athlete_id: (
+            Rating(row.rating_after, row.rd_after, row.volatility_after),
+            row.fought_on,
+            last_weight.get(athlete_id),
+        )
         for athlete_id, row in before.items()
     }
+    tournaments: dict[int, tuple[Tournament, ...]] = {}
+    for row in connection.execute(
+        TOURNAMENTS_BEFORE_QUERY,
+        {"first_seq": first_seq, "since": since, "days": ranking.listing_days, "weights": WEIGHTS},
+    ):
+        tournaments[row.athlete_id] = tournaments.get(row.athlete_id, ()) + (
+            (row.fought_on, row.competition_id, row.weight),
+        )
     contests = load_contests(connection, since)
     # Stand-ins for the latest rows before: they carry the weight category, and
     # get next_fought_on set when the athlete fights again.
@@ -269,7 +315,9 @@ def rate_since(session: Session, since: date, params: RatingParams) -> None:
         athlete_id: {"weight": row.weight, "next_fought_on": LATEST}
         for athlete_id, row in before.items()
     }
-    rows = rating_change_rows(run(contests, params, start), first_seq, previous)
+    rows = rating_change_rows(
+        run(contests, params, start), first_seq, previous, ranking, tournaments
+    )
     logger.info("From %s: %d rating changes from %d contests", since, len(rows), len(contests))
 
     session.execute(delete(RatingChange).where(RatingChange.seq >= first_seq))
@@ -277,26 +325,31 @@ def rate_since(session: Session, since: date, params: RatingParams) -> None:
     for athlete_id, row in before.items():
         next_fought_on = previous[athlete_id]["next_fought_on"]
         if next_fought_on != row.next_fought_on:
-            session.execute(
-                update(RatingChange)
-                .where(RatingChange.contest_id == row.contest_id)
-                .where(RatingChange.athlete_id == athlete_id)
-                .values(next_fought_on=next_fought_on)
-            )
+            for model in (RatingChange, RatingListing):
+                session.execute(
+                    update(model)
+                    .where(model.contest_id == row.contest_id)
+                    .where(model.athlete_id == athlete_id)
+                    .values(next_fought_on=next_fought_on)
+                )
 
 
 def rating_change_rows(
     outcomes: list[ContestOutcome],
     first_seq: int = 0,
     previous: dict[int, dict] | None = None,
+    ranking: RankingParams = RANKING,
+    tournaments: dict[int, tuple[Tournament, ...]] | None = None,
 ) -> list[dict]:
-    """Two rows per contest, one per athlete, with next_fought_on filled in.
+    """Two rows per contest, one per athlete, with next_fought_on filled in, and
+    which tables list the athlete from it on (listed_here, and the others in "also").
 
     `previous`: each athlete's row before these contests, when continuing; its
-    next_fought_on is set here too.
+    next_fought_on is set here too. `tournaments`: their recent tournaments then.
     """
     rows: list[dict] = []
     latest_row: dict[int, dict] = dict(previous or {})  # athlete -> their latest row so far
+    recent_tournaments = dict(tournaments or {})
     for seq, outcome in enumerate(outcomes, start=first_seq):
         contest = outcome.contest
         blue_chance = outcome.blue_win_probability
@@ -313,6 +366,11 @@ def rating_change_rows(
             weight = contest.weight if contest.weight in WEIGHTS else None
             if weight is None and previous_row is not None:
                 weight = previous_row["weight"]  # an open-weight contest keeps the category
+            fought = recent(recent_tournaments.get(athlete_id, ()), contest.day, ranking)
+            if contest.weight in WEIGHTS:
+                fought += ((contest.day, contest.competition_id, contest.weight),)
+            recent_tournaments[athlete_id] = fought
+            listed = listed_weights(fought, contest.day, weight, ranking)
             row = {
                 "contest_id": contest.contest_id,
                 "athlete_id": athlete_id,
@@ -329,6 +387,8 @@ def rating_change_rows(
                 "rating_after": after.rating,
                 "rd_after": after.rd,
                 "volatility_after": after.volatility,
+                "listed_here": weight in listed,
+                "also": sorted(listed - {weight}),
             }
             rows.append(row)
             latest_row[athlete_id] = row
@@ -336,9 +396,16 @@ def rating_change_rows(
 
 
 def copy_rows(session: Session, rows: list[dict]) -> None:
-    """COPY is much faster than INSERT for hundreds of thousands of rows."""
+    """COPY is much faster than INSERT for hundreds of thousands of rows. The rows'
+    other tables ("also") go to rating_listing."""
     cursor = session.connection().connection.cursor()
     table = RatingChange.__table__
     with cursor.copy(f"copy {table.schema}.{table.name} ({', '.join(COLUMNS)}) from stdin") as copy:
         for row in rows:
             copy.write_row([row[column] for column in COLUMNS])
+    listing = RatingListing.__table__
+    columns = ", ".join(LISTING_COLUMNS)
+    with cursor.copy(f"copy {listing.schema}.{listing.name} ({columns}) from stdin") as copy:
+        for row in rows:
+            for weight in row["also"]:
+                copy.write_row([{**row, "weight": weight}[column] for column in LISTING_COLUMNS])

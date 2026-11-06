@@ -393,3 +393,150 @@ def test_a_full_run_reports_the_rows_it_corrected():
 
     with job_run("rating_full"):
         assert run_rating(full=True).corrected == 1
+
+
+# --- a change of weight category ------------------------------------------------
+
+# A share large enough to see in the test's few contests.
+MOVES = RatingParams(move_handicap=0.25)
+
+
+def test_a_move_up_starts_lower_and_a_move_back_starts_higher():
+    from ajr.rating.engine import ContestRecord, run
+
+    def fought(contest_id, day, weight, blue, white):
+        return ContestRecord(contest_id, day, weight, blue, white, True, False, False)
+
+    contests = [
+        fought(1, date(2026, 1, 1), "-73", 1, 2),
+        fought(2, date(2026, 2, 1), "-81", 1, 3),  # 1 moves up
+        fought(3, date(2026, 3, 1), "Open", 1, 3),  # the open category is no move
+        fought(4, date(2026, 4, 1), "-73", 1, 2),  # and back down
+    ]
+    plain = run(contests, RatingParams(move_handicap=0))
+    moved = run(contests, MOVES)
+
+    after_first = moved[0].blue_after.rating
+    assert moved[1].blue_before.rating == pytest.approx(after_first * 0.75)
+    assert moved[1].white_before == plain[1].white_before  # 3's first contest: no move
+    after_open = moved[2].blue_after.rating
+    assert moved[2].blue_before.rating == pytest.approx(moved[1].blue_after.rating)  # grown RD only
+    assert moved[3].blue_before.rating == pytest.approx(after_open * 1.25)
+    assert plain[1].blue_before.rating == pytest.approx(plain[0].blue_after.rating)
+
+
+def test_a_move_between_runs_is_rated_as_in_a_full_run():
+    add_contests()
+    with job_run("rating"):
+        run_rating(params=MOVES)
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Later", date_from=date(2026, 9, 1)))
+        session.flush()
+        session.add(contest(301, 30, blue=1, white=3, winner=1, weight="-81"))  # 1 and 3 move up
+        session.commit()
+    mark_changed(30)
+
+    with job_run("rating"):
+        run_rating(params=MOVES)
+
+    since_change = without_seq(changes())
+    before_move = changes()[(102, 1)].rating_after
+    assert changes()[(301, 1)].rating_before < before_move  # the handicap applied
+    with job_run("rating_full"):
+        assert run_rating(full=True, params=MOVES).corrected == 0
+    assert since_change == without_seq(changes())
+
+
+# --- which weights' tables list an athlete -----------------------------------------
+
+
+def add_tournaments(athlete_id: int, weights: list[str], first_id: int) -> None:
+    """One competition a month from January 2026, one contest each against a new
+    opponent, in the given weights in turn."""
+    with Session(engine) as session:
+        if session.get(Country, 1) is None:
+            session.add(Country(id=1, name="Japan", ioc="JPN"))
+        for i, weight in enumerate(weights):
+            competition_id, opponent = first_id + i, 1000 + first_id + i
+            session.add(Competition(id=competition_id, name=f"C{competition_id}",
+                                    date_from=date(2026, 1 + i, 1)))  # fmt: skip
+            session.merge(Athlete(id=athlete_id, family_name=f"A{athlete_id}", country_id=1))
+            session.add(Athlete(id=opponent, family_name=f"O{opponent}", country_id=1))
+            session.flush()
+            session.add(contest(competition_id * 10, competition_id, blue=athlete_id,
+                                white=opponent, winner=athlete_id, weight=weight))  # fmt: skip
+        session.commit()
+
+
+def tables_listing(athlete_id: int, day: date) -> set[str]:
+    from sqlalchemy import text
+
+    with Session(engine) as session:
+        return {
+            weight
+            for weight in ("-73", "-81")
+            if session.execute(
+                text("select 1 from ajr.board_at(:w, :d) where athlete_id = :a"),
+                {"w": weight, "d": day, "a": athlete_id},
+            ).first()
+        }
+
+
+def test_an_athlete_fighting_in_two_weights_stands_in_both_tables():
+    add_tournaments(1, ["-73", "-73", "-73", "-81", "-81", "-81"], first_id=100)
+    rate()
+
+    assert tables_listing(1, date(2026, 3, 15)) == {"-73"}
+    assert tables_listing(1, date(2026, 5, 15)) == {"-73"}  # two tournaments in -81: a try-on
+    assert tables_listing(1, date(2026, 6, 15)) == {"-73", "-81"}
+    with Session(engine) as session:
+        summary = session.execute(
+            text_("select weight from ajr.athlete_summary where athlete_id = 1")
+        ).scalar_one()
+    assert summary == "-81"  # the latest contest's weight, which lists them
+
+
+def test_a_try_on_of_another_weight_leaves_the_athlete_in_their_own():
+    add_tournaments(2, ["-73", "-73", "-73", "-81"], first_id=200)
+    rate()
+
+    assert tables_listing(2, date(2026, 4, 15)) == {"-73"}
+    with Session(engine) as session:
+        summary = session.execute(
+            text_("select weight from ajr.athlete_summary where athlete_id = 2")
+        ).scalar_one()
+    assert summary == "-73"
+
+
+def test_tables_after_runs_since_changes_are_as_in_a_full_run():
+    add_tournaments(3, ["-73", "-73", "-73", "-81", "-81"], first_id=300)
+    rate()
+    add_tournaments(3, ["-81"], first_id=306)  # the third tournament in -81, in July
+    with Session(engine) as session:
+        session.execute(
+            update(Competition).where(Competition.id == 306).values(date_from=date(2026, 7, 1))
+        )
+        session.commit()
+    mark_changed(306)
+    rate()
+
+    assert tables_listing(3, date(2026, 7, 15)) == {"-73", "-81"}
+    listing_before = listing_rows()
+    assert_same_as_full_run()
+    assert listing_rows() == listing_before
+
+
+def listing_rows() -> set[tuple]:
+    from ajr.core.models import RatingListing
+
+    with Session(engine) as session:
+        return {
+            (r.contest_id, r.athlete_id, r.weight, r.fought_on, r.next_fought_on)
+            for r in session.exec(select(RatingListing))
+        }
+
+
+def text_(sql: str):
+    from sqlalchemy import text
+
+    return text(sql)

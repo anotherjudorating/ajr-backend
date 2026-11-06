@@ -23,11 +23,17 @@ SINCE = date.fromisoformat(RATINGS_SINCE)
 GENDERS = {"male": WEIGHTS[:7], "female": WEIGHTS[7:]}
 P4P_PACK = 7  # as api.p4p: the lead over the 7 best others of the own weight
 
+# The tables listing the athlete from each row on (ajr/rating/ranking.py).
 STATES_QUERY = text("""
-    select athlete_id, fought_on, weight, rating_after, rd_after
-    from ajr.rating_change
-    where weight is not null
-    order by seq
+    select rc.athlete_id, rc.fought_on, rc.weight, rc.rating_after, rc.rd_after,
+           array_remove(array_append(
+               coalesce((select array_agg(l.weight) from ajr.rating_listing l
+                         where l.contest_id = rc.contest_id and l.athlete_id = rc.athlete_id),
+                        '{}'),
+               case when rc.listed_here then rc.weight end), null) as weights
+    from ajr.rating_change rc
+    where rc.weight is not null
+    order by rc.seq
 """)
 
 
@@ -67,7 +73,7 @@ def weekly_records(
         while next_row < len(rows) and rows[next_row].fought_on <= sunday:
             row = rows[next_row]
             states[row.athlete_id] = AthleteState(
-                row.rating_after, row.rd_after, row.fought_on, row.weight
+                row.rating_after, row.rd_after, row.fought_on, row.weight, frozenset(row.weights)
             )
             next_row += 1
         if ranking.hide_after_days is not None:  # hidden ones come back with their next contest
