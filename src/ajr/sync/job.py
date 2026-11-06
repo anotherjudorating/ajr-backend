@@ -35,11 +35,13 @@ from ajr.core.models import (
     AthleteAlias,
     Competition,
     Contest,
+    ContestWalkover,
     OlympicCycle,
     WrlRanking,
 )
 from ajr.sync import parse
 from ajr.sync.client import JudobaseClient
+from ajr.sync.walkovers import walkovers
 
 logger = logging.getLogger(__name__)
 
@@ -229,14 +231,15 @@ def needs_sync(competition: Competition, today: date, full: bool) -> bool:
     return competition.contests_synced_for != competition.updated_at
 
 
+# Kinds of event (ajr/sync/kinds.py) whose contests are not fetched: kata, ne-waza
+# and camps have no fights, and team events none we rate yet (a team match's bouts:
+# other stakes, selection; judobase lists some among the individual events, e.g.
+# "European Senior Championships Mixed Teams 2026").
+NOT_FETCHED = {"kata", "camp", "team"}
+
+
 def is_not_a_fight_event(competition: Competition) -> bool:
-    """Kata and ne-waza events have no fights we can rate, and team events none we
-    rate (a team match's bouts: other stakes, selection; judobase lists some team
-    events among the individual ones, e.g. "European Senior Championships Mixed Teams
-    2026"). An event of individuals and teams ("... Seniors and Teams 2019") is kept."""
-    text = f"{competition.rank_name or ''} {competition.name or ''}".lower()
-    team = "team" in text and "individual" not in text and "and team" not in text
-    return "kata" in text or "ne-waza" in text or team
+    return competition.kind in NOT_FETCHED
 
 
 # --- contests -----------------------------------------------------------------
@@ -246,7 +249,12 @@ async def fetch_contests(
     client: JudobaseClient, competition: Competition
 ) -> list[judobase.Contest] | None:
     try:
-        return await client.contests(competition.id)
+        items = await client.contests(competition.id)
+        # A walkover can only be a contest of 0:00: only then are the events (tags,
+        # clock) worth fetching, in a second request (ajr/sync/walkovers.py).
+        if any(i.id_winner is not None and i.duration == "00:00:00" for i in items):
+            items = await client.contests(competition.id, events=True)
+        return items
     except Exception as error:
         # One broken competition must not stop the whole sync; it is retried next run.
         logger.error("Competition %s: could not fetch contests: %r", competition.id, error)
@@ -313,6 +321,7 @@ async def save_competition_contests(
         upsert(session, new_athletes, update_existing=False)
         upsert(session, contests)
         remove_missing_contests(session, competition.id, [contest.id for contest in contests])
+        save_walkovers(session, competition.id, walkovers(items), {c.id for c in contests})
         values = {"contests_synced_for": competition.updated_at}
         changed = saved_results(session, competition.id) != results_before
         if changed:
@@ -360,10 +369,29 @@ RATED_FIELDS = (
 )  # fmt: skip
 
 
+def save_walkovers(
+    session: Session, competition_id: int, found: dict[int, str], kept: set[int]
+) -> None:
+    """Replace the competition's walkovers (of the contests saved)."""
+    session.execute(
+        delete(ContestWalkover).where(
+            ContestWalkover.contest_id.in_(
+                select(Contest.id).where(Contest.competition_id == competition_id)
+            )
+        )
+    )
+    upsert(
+        session,
+        [ContestWalkover(contest_id=i, reason=r) for i, r in found.items() if i in kept],
+    )
+
+
 def saved_results(session: Session, competition_id: int) -> dict[int, tuple]:
-    """Decided contests of the competition: contest id -> what the rating reads of it."""
+    """Decided contests of the competition: contest id -> what the rating reads of it
+    (whether it was a walkover too)."""
     rows = session.execute(
-        select(Contest.id, *RATED_FIELDS)
+        select(Contest.id, *RATED_FIELDS, ContestWalkover.reason)
+        .outerjoin(ContestWalkover, ContestWalkover.contest_id == Contest.id)
         .where(Contest.competition_id == competition_id)
         .where(Contest.winner_id.is_not(None))
     )

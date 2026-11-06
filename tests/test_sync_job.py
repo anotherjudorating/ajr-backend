@@ -492,3 +492,52 @@ def test_the_aliases_file_names_each_second_id_once_and_never_a_chain():
     assert len(aliases) == len(set(aliases))
     assert all(alias != main for alias, main in rows)
     assert not {main for _, main in rows} & set(aliases)  # a main id is never an alias
+
+
+# --- walkovers and kinds of event ------------------------------------------------
+
+
+def walkover_rows() -> dict[int, str]:
+    from ajr.core.models import ContestWalkover
+
+    with Session(engine) as session:
+        return {w.contest_id: w.reason for w in session.exec(select(ContestWalkover))}
+
+
+def test_walkovers_are_saved_and_a_new_one_moves_the_mark(judobase, monkeypatch):
+    add_past_competition(judobase)
+    monkeypatch.setattr(job, "walkovers", lambda items: {12: "fusen"})
+    sync()
+    assert walkover_rows() == {12: "fusen"}
+    first_mark = results_changed_at()
+
+    judobase.competitions_list[0] = competition(1, PAST, updated=UPDATED_LATER)
+    monkeypatch.setattr(job, "walkovers", lambda items: {11: "likely"})
+    sync()
+
+    assert walkover_rows() == {11: "likely"}
+    assert results_changed_at() > first_mark  # the rating rates it again
+
+
+def test_the_kind_of_event_is_saved(judobase):
+    judobase.competitions_list += [
+        competition(1, PAST, name="Paris Grand Slam 2024"),
+        competition(2, PAST, name="Paralympic Games Tokyo 2020"),
+    ]
+
+    sync()
+
+    kinds = {c.id: c.kind for c in stored(Competition).values()}
+    assert kinds == {1: "individual", 2: "para"}
+
+
+def test_events_are_fetched_only_for_a_competition_with_a_zero_time_contest(judobase):
+    add_past_competition(judobase, 1)
+    add_past_competition(judobase, 2)
+    zero = judobase.contests_of[2][0].model_copy(update={"duration": "00:00:00"})
+    judobase.contests_of[2][0] = zero
+
+    sync()
+
+    assert sorted(judobase.contest_requests) == [1, 2, 2]
+    assert judobase.event_requests == [2]

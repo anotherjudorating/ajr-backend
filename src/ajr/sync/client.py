@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_REQUESTS = 8
 
+REQUEST_TIMEOUT = 60  # seconds
+
 retry_on_network_errors = retry(
     retry=retry_if_exception_type((ConnectionError, ClientError, TimeoutError)),
     stop=stop_after_attempt(4),
@@ -32,7 +34,9 @@ retry_on_network_errors = retry(
 
 class JudobaseClient:
     def __init__(self) -> None:
-        self.api = JudoBase()
+        # A big tournament's contests with their events are a few MB (Paris Grand Slam
+        # 2024: 3.1 MB in 17 s); the library's default is 10 s.
+        self.api = JudoBase(timeout=REQUEST_TIMEOUT)
         self.limit = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 
     async def __aenter__(self) -> JudobaseClient:
@@ -53,9 +57,13 @@ class JudobaseClient:
             return await self.api.get_competition_list()
 
     @retry_on_network_errors
-    async def contests(self, competition_id: int) -> list[Contest]:
+    async def contests(self, competition_id: int, events: bool = False) -> list[Contest]:
+        """With `events`: also the tags and the clock that tell a walkover from a fight
+        (about 2.3 times the bytes)."""
         async with self.limit:
-            return await self.api.find_contests(competition_id=competition_id)
+            return await self.api.find_contests(
+                competition_id=competition_id, include="info,events" if events else "info"
+            )
 
     @retry_on_network_errors
     async def judoka(self, judoka_id: int) -> Judoka:
