@@ -236,12 +236,26 @@ def test_competitions_without_fights_are_not_fetched(judobase):
         competition(1, PAST, name="World Kata Championships"),
         competition(2, PAST, has_results=0),
         competition(3, TODAY + timedelta(days=30)),
+        competition(4, PAST, name="European Senior Championships Mixed Teams 2026"),
+        competition(5, PAST, name="African Senior Championships 2018 - TEAMS"),
     ]
 
     sync(full=True)
 
     assert judobase.contest_requests == []
-    assert set(stored(Competition)) == {1, 2, 3}
+    assert set(stored(Competition)) == {1, 2, 3, 4, 5}
+
+
+def test_an_event_of_individuals_and_teams_is_fetched(judobase):
+    judobase.competitions_list.append(
+        competition(1, PAST, name="Asian Senior Championships 2022 (Individuals and Teams)")
+    )
+    judobase.contests_of[1] = [contest(11, 1, blue=100, white=200, winner=200)]
+    judobase.profiles.update({100: profile("NAME100"), 200: profile("NAME200")})
+
+    sync(full=True)
+
+    assert 11 in stored(Contest)
 
 
 @pytest.mark.parametrize(("argv", "run_type"), [([], "sync"), (["--full"], "sync_full")])
