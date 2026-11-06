@@ -48,27 +48,40 @@ NAMES = """
     where named.id = r.id
 """
 
+# Every Sunday's top 10 of every weight, as the weekly tables have them.
+WEEKLY_PLACE = """
+    create temp table weekly_place (sunday date, weight text, athlete_id integer, place integer)
+    on commit drop
+"""
+WEEKLY_PLACE_COPY = "copy weekly_place (sunday, weight, athlete_id, place) from stdin"
+
 HISTORY_COPY = "copy ajr.nation_history (day, country_id, place, rating) from stdin"
 
 
 def run_records(today: date | None = None) -> None:
     with Session(engine) as session:
         connection = session.connection()
+        # the weekly tables first: the SQL records read their top 10s (weekly_place)
+        history: list[dict] = []
+        places: list[tuple] = []
+        weekly = weekly_records(connection, PARAMS, RANKING, today or date.today(), history, places)
+        connection.execute(text(WEEKLY_PLACE))
+        cursor = connection.connection.cursor()
+        with cursor.copy(WEEKLY_PLACE_COPY) as copy:
+            for row in places:
+                copy.write_row(row)
         for statement in SETUP:
             connection.execute(text(statement))
         session.execute(delete(Record))
         for name, query in RECORDS.items():
             result = connection.execute(text(INSERT.format(query=query)), {"record": name})
             logger.info("%s: %d rows", name, result.rowcount)
-        history: list[dict] = []
-        weekly = weekly_records(connection, PARAMS, RANKING, today or date.today(), history)
         for name, rows in weekly.items():
             session.add_all(Record(record=name, **row) for row in rows)
             logger.info("%s: %d rows", name, len(rows))
         session.flush()
         connection.execute(text(NAMES))
         connection.execute(text("delete from ajr.nation_history"))
-        cursor = connection.connection.cursor()
         with cursor.copy(HISTORY_COPY) as copy:
             for row in history:
                 copy.write_row([row["day"], row["country_id"], row["place"], row["rating"]])
