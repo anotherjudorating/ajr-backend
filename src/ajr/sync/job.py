@@ -230,9 +230,13 @@ def needs_sync(competition: Competition, today: date, full: bool) -> bool:
 
 
 def is_not_a_fight_event(competition: Competition) -> bool:
-    """Kata and ne-waza events have no fights we can rate."""
+    """Kata and ne-waza events have no fights we can rate, and team events none we
+    rate (a team match's bouts: other stakes, selection; judobase lists some team
+    events among the individual ones, e.g. "European Senior Championships Mixed Teams
+    2026"). An event of individuals and teams ("... Seniors and Teams 2019") is kept."""
     text = f"{competition.rank_name or ''} {competition.name or ''}".lower()
-    return "kata" in text or "ne-waza" in text
+    team = "team" in text and "individual" not in text and "and team" not in text
+    return "kata" in text or "ne-waza" in text or team
 
 
 # --- contests -----------------------------------------------------------------
