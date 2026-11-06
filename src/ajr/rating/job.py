@@ -31,7 +31,7 @@ from sqlmodel import Session
 
 from ajr.core.db import engine
 from ajr.core.models import Competition, JobRun, RatingChange, RatingSettings
-from ajr.rating.engine import ContestOutcome, RatingParams, load_contests, run
+from ajr.rating.engine import MEN, WOMEN, ContestOutcome, RatingParams, load_contests, run
 from ajr.rating.glicko2 import Rating
 from ajr.rating.ranking import WEIGHTS, RankingParams
 from ajr.rating.snapshot import refresh_contest_list, refresh_snapshot
@@ -247,6 +247,16 @@ LATEST_ROWS_BEFORE_QUERY = text("""
 """)
 
 
+# Each athlete's weight category of their latest contest in one before those (a move
+# from it changes the rating: ajr/rating/engine.py).
+LAST_WEIGHT_BEFORE_QUERY = text("""
+    select distinct on (athlete_id) athlete_id, weight
+    from ajr.rating_change
+    where seq < :first_seq and weight = any(cast(:weights as text[]))
+    order by athlete_id, seq desc
+""")
+
+
 def rate_since(session: Session, since: date, params: RatingParams) -> None:
     connection = session.connection()
     # Read ratings back exactly: with fewer digits (the Supabase pooler's default) the
@@ -258,8 +268,17 @@ def rate_since(session: Session, since: date, params: RatingParams) -> None:
         for row in connection.execute(LATEST_ROWS_BEFORE_QUERY, {"first_seq": first_seq})
     }
 
+    last_weight = dict(
+        connection.execute(
+            LAST_WEIGHT_BEFORE_QUERY, {"first_seq": first_seq, "weights": [*MEN, *WOMEN]}
+        ).all()
+    )
     start = {
-        athlete_id: (Rating(row.rating_after, row.rd_after, row.volatility_after), row.fought_on)
+        athlete_id: (
+            Rating(row.rating_after, row.rd_after, row.volatility_after),
+            row.fought_on,
+            last_weight.get(athlete_id),
+        )
         for athlete_id, row in before.items()
     }
     contests = load_contests(connection, since)

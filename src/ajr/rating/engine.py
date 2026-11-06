@@ -4,6 +4,13 @@ Each contest is a rating period of its own. Before it, both athletes' RD grows f
 the days they did not fight; the chance of a blue win is recorded as the
 prediction; then both ratings are updated. Every contest counts.
 
+A move to another weight category moves the rating too (see RatingParams): the
+athlete's first contest in a heavier weight starts from a rating lower by
+move_handicap of it, and back in a lighter one higher by as much, so a try-on of a
+heavier weight costs nothing on return. Strong athletes moving up win less than their
+rating says until about their 10th contest there
+(docs/audits/2026-11-06-weight-ratings.md).
+
 The defaults were picked with `python -m ajr.rating.tune` (see its docstring).
 """
 
@@ -24,6 +31,7 @@ class RatingParams:
     rd_growth: float = 5  # RD² grows by rd_growth² for every day without contests
     initial_volatility: float = 0.06
     tau: float = 0.5
+    move_handicap: float = 0.05  # share of the rating, on a change of weight category
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,24 @@ CONTESTS_QUERY = text("""
 """)
 
 
+# Lightest to heaviest, men then women: a move's direction (judobase's other
+# categories, the open one among them, are no move).
+MEN = ("-60", "-66", "-73", "-81", "-90", "-100", "+100")
+WOMEN = ("-48", "-52", "-57", "-63", "-70", "-78", "+78")
+
+
+def move_shift(
+    rating: float, from_weight: str | None, to_weight: str | None, params: RatingParams
+) -> float:
+    """Rating points added on a contest in `to_weight` after the latest one in
+    `from_weight`: negative up, positive down, 0 for no move."""
+    for weights in (MEN, WOMEN):
+        if from_weight in weights and to_weight in weights and from_weight != to_weight:
+            step = params.move_handicap * rating
+            return -step if weights.index(to_weight) > weights.index(from_weight) else step
+    return 0.0  # the same weight, another kind of category, or men's to women's (a data error)
+
+
 def load_contests(connection: Connection, since: date | None = None) -> list[ContestRecord]:
     """Decided contests in rating order.
 
@@ -87,14 +113,18 @@ def load_contests(connection: Connection, since: date | None = None) -> list[Con
 def run(
     contests: list[ContestRecord],
     params: RatingParams,
-    start: dict[int, tuple[Rating, date]] | None = None,
+    start: dict[int, tuple[Rating, date, str | None]] | None = None,
 ) -> list[ContestOutcome]:
-    """`start`: athletes' rating and last contest day before the first contest, when
-    continuing a previous run instead of starting from nothing."""
+    """`start`: athletes' rating, last contest day and the weight of their latest
+    contest in a weight category before the first contest, when continuing a previous
+    run instead of starting from nothing."""
     ratings: dict[int, Rating] = {}
     last_day: dict[int, date] = {}
-    for athlete_id, (rating, day) in (start or {}).items():
+    last_weight: dict[int, str] = {}
+    for athlete_id, (rating, day, weight) in (start or {}).items():
         ratings[athlete_id], last_day[athlete_id] = rating, day
+        if weight is not None:
+            last_weight[athlete_id] = weight
     outcomes = []
 
     for contest in contests:
@@ -110,12 +140,16 @@ def run(
             contest = replace(contest, day=day)
         blue = current_rating(ratings, last_day, contest.blue_id, contest.day, params)
         white = current_rating(ratings, last_day, contest.white_id, contest.day, params)
+        blue = moved(blue, last_weight.get(contest.blue_id), contest.weight, params)
+        white = moved(white, last_weight.get(contest.white_id), contest.weight, params)
         blue_score = 1.0 if contest.blue_won else 0.0
         blue_after = update(blue, [(white, blue_score)], params.tau)
         white_after = update(white, [(blue, 1 - blue_score)], params.tau)
 
         ratings[contest.blue_id], ratings[contest.white_id] = blue_after, white_after
         last_day[contest.blue_id] = last_day[contest.white_id] = contest.day
+        if contest.weight in MEN or contest.weight in WOMEN:
+            last_weight[contest.blue_id] = last_weight[contest.white_id] = contest.weight
         outcomes.append(
             ContestOutcome(
                 contest=contest,
@@ -128,6 +162,13 @@ def run(
         )
 
     return outcomes
+
+
+def moved(
+    rating: Rating, from_weight: str | None, to_weight: str | None, params: RatingParams
+) -> Rating:
+    shift = move_shift(rating.rating, from_weight, to_weight, params)
+    return replace(rating, rating=rating.rating + shift) if shift else rating
 
 
 def current_rating(

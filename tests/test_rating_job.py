@@ -393,3 +393,55 @@ def test_a_full_run_reports_the_rows_it_corrected():
 
     with job_run("rating_full"):
         assert run_rating(full=True).corrected == 1
+
+
+# --- a change of weight category ------------------------------------------------
+
+# A share large enough to see in the test's few contests.
+MOVES = RatingParams(move_handicap=0.25)
+
+
+def test_a_move_up_starts_lower_and_a_move_back_starts_higher():
+    from ajr.rating.engine import ContestRecord, run
+
+    def fought(contest_id, day, weight, blue, white):
+        return ContestRecord(contest_id, day, weight, blue, white, True, False, False)
+
+    contests = [
+        fought(1, date(2026, 1, 1), "-73", 1, 2),
+        fought(2, date(2026, 2, 1), "-81", 1, 3),  # 1 moves up
+        fought(3, date(2026, 3, 1), "Open", 1, 3),  # the open category is no move
+        fought(4, date(2026, 4, 1), "-73", 1, 2),  # and back down
+    ]
+    plain = run(contests, RatingParams(move_handicap=0))
+    moved = run(contests, MOVES)
+
+    after_first = moved[0].blue_after.rating
+    assert moved[1].blue_before.rating == pytest.approx(after_first * 0.75)
+    assert moved[1].white_before == plain[1].white_before  # 3's first contest: no move
+    after_open = moved[2].blue_after.rating
+    assert moved[2].blue_before.rating == pytest.approx(moved[1].blue_after.rating)  # grown RD only
+    assert moved[3].blue_before.rating == pytest.approx(after_open * 1.25)
+    assert plain[1].blue_before.rating == pytest.approx(plain[0].blue_after.rating)
+
+
+def test_a_move_between_runs_is_rated_as_in_a_full_run():
+    add_contests()
+    with job_run("rating"):
+        run_rating(params=MOVES)
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Later", date_from=date(2026, 9, 1)))
+        session.flush()
+        session.add(contest(301, 30, blue=1, white=3, winner=1, weight="-81"))  # 1 and 3 move up
+        session.commit()
+    mark_changed(30)
+
+    with job_run("rating"):
+        run_rating(params=MOVES)
+
+    since_change = without_seq(changes())
+    before_move = changes()[(102, 1)].rating_after
+    assert changes()[(301, 1)].rating_before < before_move  # the handicap applied
+    with job_run("rating_full"):
+        assert run_rating(full=True, params=MOVES).corrected == 0
+    assert since_change == without_seq(changes())
