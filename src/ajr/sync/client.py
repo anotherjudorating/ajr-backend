@@ -57,11 +57,12 @@ class JudobaseClient:
             return await self.api.get_competition_list()
 
     @retry_on_network_errors
-    async def contests(self, competition_id: int) -> list[Contest]:
+    async def contests(self, competition_id: int, events: bool = False) -> list[Contest]:
+        """With `events`: also the tags and the clock that tell a walkover from a fight
+        (about 2.3 times the bytes)."""
         async with self.limit:
-            # with their events: the tags and clock that tell a walkover from a fight
             return await self.api.find_contests(
-                competition_id=competition_id, include="info,events"
+                competition_id=competition_id, include="info,events" if events else "info"
             )
 
     @retry_on_network_errors

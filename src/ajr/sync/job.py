@@ -249,7 +249,12 @@ async def fetch_contests(
     client: JudobaseClient, competition: Competition
 ) -> list[judobase.Contest] | None:
     try:
-        return await client.contests(competition.id)
+        items = await client.contests(competition.id)
+        # A walkover can only be a contest of 0:00: only then are the events (tags,
+        # clock) worth fetching, in a second request (ajr/sync/walkovers.py).
+        if any(i.id_winner is not None and i.duration == "00:00:00" for i in items):
+            items = await client.contests(competition.id, events=True)
+        return items
     except Exception as error:
         # One broken competition must not stop the whole sync; it is retried next run.
         logger.error("Competition %s: could not fetch contests: %r", competition.id, error)

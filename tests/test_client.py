@@ -67,7 +67,7 @@ def test_ids_are_passed_to_judobase():
 
     api = asyncio.run(scenario())
 
-    api.find_contests.assert_awaited_once_with(competition_id=5, include="info,events")
+    api.find_contests.assert_awaited_once_with(competition_id=5, include="info")
     api.get_judoka_info.assert_awaited_once_with(7)
 
 

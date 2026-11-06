@@ -529,3 +529,15 @@ def test_the_kind_of_event_is_saved(judobase):
 
     kinds = {c.id: c.kind for c in stored(Competition).values()}
     assert kinds == {1: "individual", 2: "para"}
+
+
+def test_events_are_fetched_only_for_a_competition_with_a_zero_time_contest(judobase):
+    add_past_competition(judobase, 1)
+    add_past_competition(judobase, 2)
+    zero = judobase.contests_of[2][0].model_copy(update={"duration": "00:00:00"})
+    judobase.contests_of[2][0] = zero
+
+    sync()
+
+    assert sorted(judobase.contest_requests) == [1, 2, 2]
+    assert judobase.event_requests == [2]
