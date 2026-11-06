@@ -2,7 +2,12 @@
 
 Each contest is a rating period of its own. Before it, both athletes' RD grows for
 the days they did not fight; the chance of a blue win is recorded as the
-prediction; then both ratings are updated. Every contest counts.
+prediction; then both ratings are updated. Only real fights count (RatingParams.
+real_fights_only): contests of individual seniors' events (ajr.competition.kind) in the
+14 weight categories, no walkovers (ajr.contest_walkover; a 0:00 contest that is not
+one was fought, its time lost: docs/audits/2026-11-06-real-fights.md). judobase's bye
+flag is no sign: on the 29 decided contests with two athletes that carry it, most
+have a score and a clock (a real bye has one athlete and no winner here).
 
 A move to another weight category moves the rating too (see RatingParams): the
 athlete's first contest in a heavier weight starts from a rating lower by
@@ -32,6 +37,9 @@ class RatingParams:
     initial_volatility: float = 0.06
     tau: float = 0.5
     move_handicap: float = 0.05  # share of the rating, on a change of weight category
+    # only real fights (see the module's docstring): individual seniors' events, the 14
+    # weights, no walkovers; False rates every decided contest, as before 2026-11
+    real_fights_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -82,6 +90,10 @@ CONTESTS_QUERY = text("""
       and ct.blue_id <> ct.white_id  -- never one athlete against themself (athlete_alias)
       and cm.date_from is not null
       and (cast(:since as date) is null or cm.date_from >= :since)
+      and (not :real_fights_only or (
+          cm.kind = 'individual'
+          and ct.weight = any(:weights)
+          and not exists (select from ajr.contest_walkover w where w.contest_id = ct.id)))
     order by cm.date_from, cm.id, ct.weight, ct.round desc nulls last, ct.fight_no, ct.id
 """)
 
@@ -104,12 +116,15 @@ def move_shift(
     return 0.0  # the same weight, another kind of category, or men's to women's (a data error)
 
 
-def load_contests(connection: Connection, since: date | None = None) -> list[ContestRecord]:
-    """Decided contests in rating order.
+def load_contests(
+    connection: Connection, since: date | None = None, real_fights_only: bool = True
+) -> list[ContestRecord]:
+    """Decided contests in rating order: the real fights only, unless asked for all.
 
     With `since`, only those of competitions starting that day or later.
     """
-    return [ContestRecord(*row) for row in connection.execute(CONTESTS_QUERY, {"since": since})]
+    query = {"since": since, "real_fights_only": real_fights_only, "weights": list(MEN + WOMEN)}
+    return [ContestRecord(*row) for row in connection.execute(CONTESTS_QUERY, query)]
 
 
 def run(

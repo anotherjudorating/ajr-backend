@@ -49,8 +49,9 @@ SETUP = [
     create temp table medal on commit drop as
     select * from finish where result in {MEDALS} and rank_name in {WORLD_TOUR}
     """,
-    # Real fights (no byes, no walkovers), with the scores around them and the
-    # opponent's rating before; the Sunday before the contest, for the weekly tables.
+    # Every rated contest (a real fight: ajr/rating/engine.py), with the scores around
+    # them and the opponent's rating before; the Sunday before the contest, for the
+    # weekly tables. A 0:00 one was fought, its time lost (longest_contest skips it).
     """
     create temp table fight on commit drop as
     select rc.athlete_id, rc.opponent_id, rc.contest_id, rc.seq, rc.fought_on, rc.weight, rc.won,
@@ -67,7 +68,6 @@ SETUP = [
     join ajr.rating_change o on o.contest_id = rc.contest_id and o.athlete_id = rc.opponent_id
     join ajr.contest ct on ct.id = rc.contest_id
     join ajr.competition cm on cm.id = ct.competition_id
-    where not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
     """,
     # The opponent's place on the Sunday before (their best, if in two weights).
     """

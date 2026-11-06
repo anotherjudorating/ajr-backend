@@ -41,7 +41,8 @@ REBUILD = text("""
 """)
 
 
-# Real fights only: no byes, no 0:00 walkovers. An upset: the winner's chance <= 35%.
+# Every rated contest (a real fight: ajr/rating/engine.py). An upset: the winner's
+# chance <= 35%.
 COMPETITION_STATS = text("""
     insert into ajr.competition_stats (competition_id, contests, accuracy, upsets)
     select ct.competition_id,
@@ -50,7 +51,7 @@ COMPETITION_STATS = text("""
            count(*) filter (where rc.win_probability <= 0.35)
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
-    where rc.won and not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
+    where rc.won
     group by ct.competition_id
 """)
 
@@ -107,7 +108,7 @@ ATHLETE_SUMMARY = text("""
     where rc.next_fought_on = date '9999-12-31'
 """)
 
-# Every real fight (no byes, no 0:00 walkovers) of the competitions from a year on,
+# Every rated contest (a real fight: ajr/rating/engine.py) of the competitions from a year on,
 # both athletes with their chance and rating change, as api.contests lists them.
 CONTEST_LIST = text("""
     insert into ajr.contest_list
@@ -129,8 +130,7 @@ CONTEST_LIST = text("""
     left join ajr.country wc on wc.id = wa.country_id
     join ajr.athlete ba on ba.id = ct.blue_id
     left join ajr.country bc on bc.id = ba.country_id
-    where not coalesce(ct.bye, false) and ct.duration is distinct from '00:00:00'
-      and (cast(:since as integer) is null
+    where (cast(:since as integer) is null
            or cm.date_from >= make_date(cast(:since as integer), 1, 1))
 """)
 CONTEST_LIST_DELETE = text("""
@@ -190,18 +190,41 @@ NATION_SNAPSHOT = text("""
 # result of their last contest (judobase counts the rounds down to the final, 0;
 # labelled only in brackets with one final), their score before and after, contests,
 # wins, and their rated contests before it. Read by the tournament's results and the
-# athlete's history, and summed up per nation below.
+# athlete's history, and summed up per nation below. A walkover is not rated but is
+# part of the bracket: a final won or lost by one still decides the medal, and it
+# counts among the contests and wins; an athlete with no rated contest there has no
+# row.
 ATHLETE_COMPETITION = text("""
     insert into ajr.athlete_competition
-    with fights as (
-        select rc.athlete_id, ct.competition_id, ct.weight, ct.id, ct.round, ct.fight_no,
-               ct.round_name, rc.seq, rc.won,
+    with rated as (
+        select rc.athlete_id, rc.contest_id, rc.seq, rc.won,
                rc.rating_before - s.rd_factor * rc.rd_before as score_before,
                rc.rating_after - s.rd_factor * rc.rd_after as score_after,
                row_number() over (partition by rc.athlete_id order by rc.seq) - 1 as before
         from ajr.rating_change rc
-        join ajr.contest ct on ct.id = rc.contest_id
         cross join ajr.rating_settings s
+    ),
+    walkovers as (
+        select x.athlete_id, ct.id as contest_id, null::integer as seq,
+               ct.winner_id = x.athlete_id as won, null::double precision as score_before,
+               null::double precision as score_after, null::bigint as before
+        from ajr.contest_walkover w
+        join ajr.contest ct on ct.id = w.contest_id
+        join ajr.competition cm on cm.id = ct.competition_id
+        cross join lateral (values (ct.white_id), (ct.blue_id)) x(athlete_id)
+        where ct.winner_id is not null and x.athlete_id is not null
+          and cm.kind = 'individual'
+          -- the weights the rating counts: an athlete has rated contests there
+          and exists (select from ajr.rating_change rc
+                      join ajr.contest o on o.id = rc.contest_id
+                      where rc.athlete_id = x.athlete_id
+                        and o.competition_id = ct.competition_id and o.weight = ct.weight)
+    ),
+    fights as (
+        select f.athlete_id, ct.competition_id, ct.weight, ct.id, ct.round, ct.fight_no,
+               ct.round_name, f.seq, f.won, f.score_before, f.score_after, f.before
+        from (select * from rated union all select * from walkovers) f
+        join ajr.contest ct on ct.id = f.contest_id
         where ct.weight is not null
     ),
     one_final as (
@@ -212,8 +235,10 @@ ATHLETE_COMPETITION = text("""
     ),
     by_athlete as (
         select athlete_id, competition_id, weight,
-               (array_agg(score_before order by seq))[1] as score_before,
-               (array_agg(score_after order by seq desc))[1] as score_after,
+               (array_agg(score_before order by seq) filter (where seq is not null))[1]
+                   as score_before,
+               (array_agg(score_after order by seq desc) filter (where seq is not null))[1]
+                   as score_after,
                -- the last contest: the latest round (judobase counts down to the final,
                -- 0), the contest id when two have the same round and number
                (array_agg(round_name order by round nulls last, fight_no desc, id desc))[1]
@@ -224,6 +249,7 @@ ATHLETE_COMPETITION = text("""
                min(before) as contests_before
         from fights
         group by athlete_id, competition_id, weight
+        having count(seq) > 0
     )
     select b.athlete_id, b.competition_id, b.weight,
            case when o.weight is not null then ajr.result_label(b.last_round, b.last_won) end,
