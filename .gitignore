@@ -225,6 +225,7 @@ __marimo__/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+*.plan
 
 # macOS
 .DS_Store

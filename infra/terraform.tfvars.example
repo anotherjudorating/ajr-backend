@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (git-ignored: *.tfvars) and fill in, or export the same
+# as TF_VAR_<name> from ~/.config/ajr/terraform.env (README). Never commit the real
+# file.
+
+cloudflare_account_id = "" # Dashboard → zone Overview → API → Account ID (not a secret)
+
+github_token          = "" # fine-grained PAT: ajr-backend (+ ajr-web), Administration RW, Secrets RW, Variables RW, Contents R
+supabase_access_token = "" # supabase.com/dashboard/account/tokens, read-write
+cloudflare_api_token  = "" # Account › Workers Scripts › Edit, Account › Account Settings › Read (+ zone permissions if shared with ajr-web/infra)
+
+supabase_database_password = "" # the password inside today's DATABASE_URL secret; never reset it
+revalidate_secret          = "" # today's REVALIDATE_SECRET (~/.config/ajr/revalidate.env); the same value goes to Render via ajr-web/infra
