@@ -328,8 +328,9 @@ def publish(local: Connection, remote: Connection, dry_run: bool = False) -> lis
 # leaves its old rows' space in the file: Postgres reuses it but never gives it back,
 # and production (500 MB on the free plan) holds about twice its data after one
 # (docs/audits, 2026-11-06: 531 MB, 270 MB compacted). So after such a publish the
-# table is rewritten compactly (VACUUM FULL): it is locked meanwhile (about a minute
-# for rating_change; the site serves its cache), and needs room for the new file.
+# table is rewritten compactly (VACUUM FULL, then a plain VACUUM): it is locked
+# meanwhile (about a minute for rating_change; the site serves its cache), and needs
+# room for the new file.
 # The 15-minute runs change a few hundred rows: nothing to do.
 COMPACT_SHARE = 0.3  # of the table's rows sent or deleted
 COMPACT_MIN_BYTES = 20 * 1024 * 1024
@@ -358,10 +359,15 @@ def compact(remote: Connection, changes: list[Change]) -> list[str]:
         remote.execute("set statement_timeout = 0")  # this session's maintenance only
         remote.execute(sql.SQL("set lock_timeout = {}").format(sql.Literal(COMPACT_LOCK_TIMEOUT)))
         try:
-            remote.execute(sql.SQL("vacuum (full, analyze) {}").format(table))
+            remote.execute(sql.SQL("vacuum (full) {}").format(table))
         except LockNotAvailable:
             logger.warning("%s not compacted: a long read held it", change.table)
             continue
+        # VACUUM FULL writes a new file with an empty visibility map: until a plain
+        # VACUUM marks its pages all-visible, no index answers alone (the board's
+        # index read thousands of pages, not 30; on 2026-11-07 athlete pages hit the
+        # 3-second limit). A plain VACUUM takes no lock that blocks reads.
+        remote.execute(sql.SQL("vacuum (analyze) {}").format(table))
         after = remote.execute(
             sql.SQL("select pg_table_size({})").format(sql.Literal(f"{SCHEMA}.{change.table}"))
         ).fetchone()[0]
