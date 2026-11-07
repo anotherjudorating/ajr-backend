@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass
 
 from psycopg import Connection, sql
+from psycopg.errors import LockNotAvailable
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,57 @@ def publish(local: Connection, remote: Connection, dry_run: bool = False) -> lis
                 " (whole table)" if change.whole else "",
             )  # fmt: skip
     return changes
+
+
+# A table rewritten for the most part (a full rating: every row of rating_change)
+# leaves its old rows' space in the file: Postgres reuses it but never gives it back,
+# and production (500 MB on the free plan) holds about twice its data after one
+# (docs/audits, 2026-11-06: 531 MB, 270 MB compacted). So after such a publish the
+# table is rewritten compactly (VACUUM FULL): it is locked meanwhile (about a minute
+# for rating_change; the site serves its cache), and needs room for the new file.
+# The 15-minute runs change a few hundred rows: nothing to do.
+COMPACT_SHARE = 0.3  # of the table's rows sent or deleted
+COMPACT_MIN_BYTES = 20 * 1024 * 1024
+COMPACT_MIN_ROWS = 1000  # sent or deleted: below, not worth counting the table
+COMPACT_LOCK_TIMEOUT = "30s"  # waiting for long reads; then left for the next time
+
+
+def compact(remote: Connection, changes: list[Change]) -> list[str]:
+    """VACUUM FULL production's tables that the publish rewrote for the most part;
+    the ones compacted. Commits whatever `remote` has open (VACUUM runs outside a
+    transaction)."""
+    remote.commit()
+    remote.autocommit = True
+    done = []
+    for change in changes:
+        if change.upserted + change.deleted < COMPACT_MIN_ROWS:
+            continue
+        table = sql.Identifier(SCHEMA, change.table)
+        size, rows = remote.execute(
+            sql.SQL("select pg_table_size({}), (select count(*) from {})").format(
+                sql.Literal(f"{SCHEMA}.{change.table}"), table
+            )
+        ).fetchone()
+        if size < COMPACT_MIN_BYTES or change.upserted + change.deleted < COMPACT_SHARE * rows:
+            continue
+        remote.execute("set statement_timeout = 0")  # this session's maintenance only
+        remote.execute(sql.SQL("set lock_timeout = {}").format(sql.Literal(COMPACT_LOCK_TIMEOUT)))
+        try:
+            remote.execute(sql.SQL("vacuum (full, analyze) {}").format(table))
+        except LockNotAvailable:
+            logger.warning("%s not compacted: a long read held it", change.table)
+            continue
+        after = remote.execute(
+            sql.SQL("select pg_table_size({})").format(sql.Literal(f"{SCHEMA}.{change.table}"))
+        ).fetchone()[0]
+        logger.info("Compacted %s: %d MB -> %d MB", change.table, size >> 20, after >> 20)
+        done.append(change.table)
+    return done
+
+
+def database_size(remote: Connection) -> int:
+    """Production's size in bytes (the free plan allows 500 MB)."""
+    return remote.execute("select pg_database_size(current_database())").fetchone()[0]
 
 
 # Per table: its rows and a sum of their hashes, which does not depend on their
