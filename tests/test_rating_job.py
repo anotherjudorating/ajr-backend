@@ -12,6 +12,7 @@ from ajr.core.models import (
     Athlete,
     Competition,
     Contest,
+    ContestWalkover,
     Country,
     JobRun,
     RatingChange,
@@ -38,11 +39,11 @@ def contest(contest_id: int, competition_id: int, blue: int, white: int, winner:
 
 
 def add_contests() -> None:
-    """Athletes 1, 2, 3: two contests in March at -73, one open-weight contest in June."""
+    """Athletes 1, 2, 3: two contests in March at -73, one in June."""
     with Session(engine) as session:
         session.add(Country(id=1, name="Japan", ioc="JPN"))
         session.add(Competition(id=10, name="Grand Slam", date_from=date(2026, 3, 1)))
-        session.add(Competition(id=20, name="Open", date_from=date(2026, 6, 1)))
+        session.add(Competition(id=20, name="June", date_from=date(2026, 6, 1)))
         session.flush()
         session.add_all(Athlete(id=i, family_name=f"A{i}", country_id=1) for i in (1, 2, 3))
         session.flush()
@@ -50,8 +51,8 @@ def add_contests() -> None:
             [
                 contest(101, 10, blue=1, white=2, winner=1, weight="-73"),
                 contest(102, 10, blue=1, white=3, winner=3, weight="-73"),
-                contest(201, 20, blue=2, white=3, winner=2, weight="Open"),
-                contest(202, 20, blue=1, white=2, winner=None, weight="Open"),  # not fought yet
+                contest(201, 20, blue=2, white=3, winner=2, weight="-73"),
+                contest(202, 20, blue=1, white=2, winner=None, weight="-73"),  # not fought yet
             ]
         )
         session.commit()
@@ -95,7 +96,7 @@ def test_next_fought_on_links_each_athlete_history():
 def test_a_contest_dated_outside_its_competition_counts_on_the_competition_day():
     add_contests()
     with Session(engine) as session:
-        # judobase: the June Open's contest started in February, before the March Grand Slam
+        # judobase: the June contest started in February, before the March Grand Slam
         session.execute(
             update(Contest).where(Contest.id == 201).values(started_at=datetime(2026, 2, 3, 10))
         )
@@ -141,14 +142,31 @@ def test_a_contest_without_a_time_counts_after_the_athletes_earlier_ones():
     assert rows[(301, 1)].next_fought_on == date(2026, 9, 19)
 
 
-def test_open_weight_contest_keeps_the_category():
+def test_only_real_fights_are_rated():
     add_contests()
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Paralympic Games", date_from=date(2026, 7, 1),
+                                kind="para"))  # fmt: skip
+        session.add(Competition(id=40, name="Grand Prix", date_from=date(2026, 8, 1)))
+        session.flush()
+        session.add_all(
+            [
+                contest(301, 30, blue=1, white=2, winner=1, weight="-73"),  # another kind
+                contest(401, 40, blue=1, white=2, winner=1, weight="Open"),  # another category
+                contest(402, 40, blue=1, white=3, winner=1, weight="-73"),  # a walkover
+                contest(403, 40, blue=2, white=3, winner=2, weight="-73"),  # flagged a bye
+                contest(404, 40, blue=2, white=1, winner=2, weight="-73"),  # 0:00, fought
+            ]
+        )
+        session.flush()
+        session.add(ContestWalkover(contest_id=402, reason="fusen"))
+        session.execute(update(Contest).where(Contest.id == 403).values(bye=True))
+        session.execute(update(Contest).where(Contest.id == 404).values(duration="00:00:00"))
+        session.commit()
 
     run_rating()
 
-    rows = changes()
-    assert rows[(201, 2)].weight == "-73"
-    assert rows[(201, 3)].weight == "-73"
+    assert {c for c, _ in changes()} == {101, 102, 201, 403, 404}
 
 
 def test_settings_are_saved():

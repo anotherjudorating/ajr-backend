@@ -253,6 +253,7 @@ class RatingSettings(SQLModel, table=True):
     initial_volatility: float
     tau: float
     move_handicap: float  # on a change of weight category: share of the rating
+    real_fights_only: bool  # only real fights rated (ajr/rating/engine.py)
     rd_factor: float  # leaderboard score = rating - rd_factor * RD
     hide_after_days: int | None  # not in the table after this many days without contests
     min_tournaments: int  # in a weight within listing_days, to stand in its table

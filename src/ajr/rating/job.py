@@ -202,7 +202,7 @@ def rate_everything(
 ) -> int:
     """With `compare`: how many rows differ from the history there was (seq aside,
     which only numbers them)."""
-    contests = load_contests(session.connection())
+    contests = load_contests(session.connection(), real_fights_only=params.real_fights_only)
     rows = rating_change_rows(run(contests, params), ranking=ranking)
     logger.info("Full run: %d rating changes from %d contests", len(rows), len(contests))
     corrected = differences(session, rows) if compare else 0
@@ -308,7 +308,7 @@ def rate_since(session: Session, since: date, params: RatingParams, ranking: Ran
         tournaments[row.athlete_id] = tournaments.get(row.athlete_id, ()) + (
             (row.fought_on, row.competition_id, row.weight),
         )
-    contests = load_contests(connection, since)
+    contests = load_contests(connection, since, real_fights_only=params.real_fights_only)
     # Stand-ins for the latest rows before: they carry the weight category, and
     # get next_fought_on set when the athlete fights again.
     previous = {
