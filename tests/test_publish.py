@@ -261,6 +261,16 @@ def test_a_run_that_only_logged_itself_does_not_refresh_the_site(connections):
     run("update ajr.athlete set given_name = 'Hifumi' where id = 1")
     assert site_changed(publish(local, remote))
 
+    # judobase touched a running tournament: published, the site not refreshed
+    run("update ajr.competition set updated_at = now(), contests_synced_for = now() where id = 10")
+    changes = publish(local, remote)
+    assert changed(changes)["competition"] == (1, 0)
+    assert not site_changed(changes)
+    assert_same(local, remote)
+
+    run("update ajr.competition set city = 'Paris', updated_at = now() where id = 10")
+    assert site_changed(publish(local, remote))
+
 
 def test_a_table_rewritten_for_the_most_part_is_compacted(connections, monkeypatch):
     local, remote = connections

@@ -37,11 +37,18 @@ NOT_PUBLISHED = {
 # make the site refresh its cache (every run logs itself in job_run; the site only
 # shows the day of the last update, which changes with today's tables anyway).
 NOT_SHOWN = {"job_run"}
+# Columns the site's pages do not show: rows that differ only in them are published
+# but do not refresh the site. judobase's updated_at of a tournament moves all the
+# while it runs (its schedule, mats, contests under way), and the sync keeps it with
+# what it fetched (ajr/sync/job.py): 88 of 97 refreshes on 2026-11-03..07 changed only
+# these (docs/audits/2026-11-07-vercel-isr-writes.md). A column a page starts to show
+# leaves this list.
+NOT_SHOWN_COLUMNS = {"competition": {"updated_at", "contests_synced_for", "results_changed_at"}}
 
 
 def site_changed(changes: list[Change]) -> bool:
     """Whether a publish changed anything the site's pages show."""
-    return any((c.upserted or c.deleted) and c.table not in NOT_SHOWN for c in changes)
+    return any(c.shown and c.table not in NOT_SHOWN for c in changes)
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,8 @@ class Change:
     upserted: int
     deleted: int
     whole: bool  # sent whole (its columns changed)
+    # a row sent or deleted differs in a column the site shows (NOT_SHOWN_COLUMNS)
+    shown: bool = True
 
 
 # Our tables with their columns and primary key, parents before the tables that
@@ -143,6 +152,7 @@ class Staged:
     keys: sql.Identifier | None
     whole: bool
     upserted: int
+    shown: bool = True  # see Change
 
 
 def stage(local: Connection, remote: Connection, table: Table) -> Staged:
@@ -164,7 +174,8 @@ def stage(local: Connection, remote: Connection, table: Table) -> Staged:
             sql.SQL("select exists ({}) or exists ({})").format(rows, keys)
         ).fetchone()[0]
         if unchanged:  # production is not asked anything
-            return Staged(table, None, None, False, 0)
+            return Staged(table, None, None, False, 0, shown=False)
+    shown = whole or shown_change(local, table, ours, theirs, keys)
 
     upserts = sql.Identifier(f"publish_{table.name}")
     deletes = sql.Identifier(f"publish_{table.name}_keys")
@@ -182,7 +193,27 @@ def stage(local: Connection, remote: Connection, table: Table) -> Staged:
     )
     upserted = stream(local, remote, rows, upserts, cols)
     stream(local, remote, keys, deletes, key)
-    return Staged(table, upserts, deletes, whole, upserted)
+    return Staged(table, upserts, deletes, whole, upserted, shown)
+
+
+def shown_change(
+    local: Connection,
+    table: Table,
+    ours: sql.Identifier,
+    theirs: sql.Identifier,
+    keys: sql.Composable,
+) -> bool:
+    """Whether the table's changes touch what the site shows: a row deleted, or one
+    new or different in a column not in NOT_SHOWN_COLUMNS."""
+    hidden = NOT_SHOWN_COLUMNS.get(table.name)
+    if not hidden:
+        return True
+    shown = names([c for c in table.columns if c not in hidden])
+    return local.execute(
+        sql.SQL("select exists ({}) or exists (select {} from {} except select {} from {})").format(
+            keys, shown, ours, shown, theirs
+        )
+    ).fetchone()[0]
 
 
 # Rows per upsert statement: production's statements have a 2-minute limit, and a
@@ -273,7 +304,7 @@ def publish(local: Connection, remote: Connection, dry_run: bool = False) -> lis
             upsert(remote, each)
     deleted = {each.table.name: delete(remote, each) for each in reversed(staged)}
     changes = [
-        Change(each.table.name, each.upserted, deleted[each.table.name], each.whole)
+        Change(each.table.name, each.upserted, deleted[each.table.name], each.whole, each.shown)
         for each in staged
     ]
     if dry_run:
