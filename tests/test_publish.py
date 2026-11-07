@@ -284,6 +284,10 @@ def test_a_table_rewritten_for_the_most_part_is_compacted(connections, monkeypat
         "athlete",
         "contest",
     ]
+    # the visibility map is filled again: the indexes answer alone
+    assert remote.execute(
+        "select relallvisible = relpages from pg_class where oid = 'ajr.athlete'::regclass"
+    ).fetchone()[0]
     # 1 athlete of 3 sent: under COMPACT_SHARE
     monkeypatch.setattr(ajr.publish, "COMPACT_SHARE", 0.5)
     assert compact(remote, [Change("athlete", 1, 0, False)]) == []
