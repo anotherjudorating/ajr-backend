@@ -66,3 +66,14 @@ variable "revalidate_secret" {
   sensitive   = true
 }
 
+
+variable "cloudflare_zone_id" {
+  description = "Zone anotherjudorating.com: the R2 custom domain lives in it"
+  type        = string
+}
+
+variable "domain" {
+  description = "The site's domain; the R2 data is served at data.<domain>"
+  type        = string
+  default     = "anotherjudorating.com"
+}
