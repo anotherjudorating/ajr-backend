@@ -38,6 +38,10 @@ on:
         description: Compare every table with production at the end (reads all of production)
         type: boolean
         default: false
+      tables_full:
+        description: Upload every past day's table again (R2), under the current rating
+        type: boolean
+        default: false
       fresh:
         description: Start from a new copy of production instead of the cached one
         type: boolean
@@ -121,6 +125,17 @@ jobs:
         run: .github/refresh-site.sh
       # The free plan allows 500 MB, and Supabase does not warn before it: an issue
       # from 450 MB on (a comment per run while over), closed under 400.
+      # After the publish: the files are computed from the same working copy production
+      # just got. Most runs skip it without a request to R2 (ajr/tables); after midnight
+      # it adds yesterday, after a rating rewritten back in time it redoes those days.
+      - name: Past days' tables (R2)
+        if: ${{ !inputs.dry_run && steps.publish.outcome == 'success' }}
+        env:
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: uv run python -m ajr.tables publish ${{ inputs.tables_full && '--full' || '' }}
       - name: Report the database's size
         if: ${{ !inputs.dry_run && steps.publish.outputs.database_mb != '' }}
         env:
