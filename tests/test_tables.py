@@ -83,18 +83,20 @@ def test_a_new_version_redoes_every_day_and_drops_old_versions_after_an_hour():
 
     plan = make_plan(manifest, State(None, "old", None), "new", TODAY, False, NOW)
 
-    assert plan.full and plan.days[0] == tables.FIRST_DAY and plan.days[-1] == TODAY - timedelta(1)
+    assert plan.full and plan.days[0] == tables.FIRST_DAY and plan.days[-1] == date(2026, 11, 2)
+    assert {d.weekday() for d in plan.days} == {0}  # Mondays
     assert plan.delete == ["older"]
 
 
-def test_a_night_adds_yesterday_and_a_correction_makes_a_new_generation():
-    manifest = {"version": "v", "last_day": "2026-11-07", "generations": []}
+def test_a_week_adds_its_monday_and_a_correction_makes_a_new_generation():
+    manifest = {"version": "v", "last_day": "2026-10-26", "generations": []}
 
-    night = make_plan(manifest, State(None, "v", None), "v", TODAY, False, NOW)
+    week = make_plan(manifest, State(None, "v", None), "v", TODAY, False, NOW)
     corrected = make_plan(manifest, State(date(2026, 10, 1), "v", None), "v", TODAY, False, NOW)
 
-    assert night.days == [date(2026, 11, 8)] and night.generation == 0
-    assert corrected.days[0] == date(2026, 10, 1) and corrected.generation == 1
+    # Monday 2026-11-09 is today: its table is done tomorrow
+    assert week.days == [date(2026, 11, 2)] and week.generation == 0
+    assert corrected.days[0] == date(2026, 10, 5) and corrected.generation == 1
     with_generation = {"generations": [{"from": "2026-10-01", "g": 1}]}
     assert generation_of(with_generation, date(2026, 9, 30)) == 0
     assert generation_of(with_generation, date(2026, 10, 1)) == 1
@@ -103,22 +105,23 @@ def test_a_night_adds_yesterday_and_a_correction_makes_a_new_generation():
 def test_publish_uploads_the_days_then_the_manifest_and_clears_the_mark(monkeypatch):
     add_data()
     run_rating()
-    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=3))
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
     bucket = MemoryBucket()
 
     with connection() as c:
         result = tables.publish(c, bucket, today=TODAY)
 
     manifest = json.loads(bucket.objects["manifest.json"])
-    assert result.plan.full and len(result.plan.days) == 3
-    key = tables.day_key(manifest["version"], "rankings", "men-73", TODAY - timedelta(1), 0)
+    assert result.plan.full and len(result.plan.days) == 3  # three Mondays
+    last_monday = date(2026, 11, 2)
+    key = tables.day_key(manifest["version"], "rankings", "men-73", last_monday, 0)
     document = json.loads(gzip.decompress(bucket.objects[key]))
     with connection() as c:
         expected = c.execute(
-            "select count(*) from api.leaderboard('-73', %s)", [TODAY - timedelta(1)]
+            "select count(*) from api.leaderboard('-73', %s)", [last_monday]
         ).fetchone()[0]
     assert len(document["rows"]) == expected
-    assert manifest["last_day"] == (TODAY - timedelta(1)).isoformat()
+    assert manifest["last_day"] == last_monday.isoformat()
     assert f"archive/{manifest['version']}/rating_history.csv.gz" in bucket.objects
     with engine.connect() as c:
         state = c.execute(text("select pending_from, version from ajr.tables_export")).one()
