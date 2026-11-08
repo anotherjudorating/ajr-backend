@@ -55,11 +55,18 @@ COMPETITION_STATS = text("""
     group by ct.competition_id
 """)
 
+# Also what the athlete's page shows (api.athlete), once per run instead of per request:
+# rating, RD and score today and 90 days and 6 months ago (ajr.score_at), the places
+# gained (today's table), the IJF place, and the place on the day of the peak — kept
+# from the last run (previous_peaks) unless the peak or the history before it changed,
+# as ajr.board_at builds that day's whole table.
 ATHLETE_SUMMARY = text("""
     insert into ajr.athlete_summary
         (athlete_id, weight, last_contest, last_competition_id, contests, place, score,
          family_name, given_name, gender, country, birth_year, last_competition,
-         weights, peak_score, peak_on, peak_weight)
+         weights, peak_score, peak_on, peak_weight,
+         rating, rd, score_today, score_change_90d, score_change_6m,
+         places_up_90d, places_up_6m, peak_place, wrl_place)
     with counted as (
         select athlete_id, count(*) as contests from ajr.rating_change group by athlete_id
     ),
@@ -88,7 +95,10 @@ ATHLETE_SUMMARY = text("""
     select rc.athlete_id, listed.weight, rc.fought_on, ct.competition_id, counted.contests,
            snapshot.place, snapshot.score,
            a.family_name, a.given_name, a.gender, co.ioc, a.dob_year, cm.name,
-           weights.weights, peaks.score, peaks.fought_on, peaks.weight
+           weights.weights, peaks.score, peaks.fought_on, peaks.weight,
+           round(now.rating)::integer, round(now.rd)::integer, round(now.score)::integer,
+           round(now.score - s90.score)::integer, round(now.score - s6m.score)::integer,
+           snapshot.places_up_90d, snapshot.places_up_6m, peak_place.place, w.place
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
     join ajr.competition cm on cm.id = ct.competition_id
@@ -105,7 +115,42 @@ ATHLETE_SUMMARY = text("""
     ) listed
     left join ajr.leaderboard_snapshot snapshot
         on snapshot.athlete_id = rc.athlete_id and snapshot.weight = listed.weight
+    left join ajr.wrl_ranking w on w.athlete_id = rc.athlete_id and w.weight = listed.weight
+    left join lateral ajr.score_at(rc.athlete_id, current_date) now on true
+    left join lateral ajr.score_at(rc.athlete_id, current_date - 90) s90 on true
+    left join lateral ajr.score_at(rc.athlete_id, (current_date - interval '6 months')::date) s6m
+        on true
+    left join previous_peaks pp
+        on pp.athlete_id = rc.athlete_id and pp.peak_weight = peaks.weight
+       and pp.peak_on = peaks.fought_on and pp.peak_score = peaks.score
+    cross join lateral (
+        select coalesce(pp.peak_place,
+                        (select b.place from ajr.board_at(peaks.weight, peaks.fought_on) b
+                         where b.athlete_id = rc.athlete_id)) as place
+    ) peak_place
     where rc.next_fought_on = date '9999-12-31'
+""")
+
+# The places on the days of the peaks from the last run that still hold: the tables
+# of days before `rated_from` did not change (rows before it are not rewritten).
+PREVIOUS_PEAKS = text("""
+    create temp table previous_peaks on commit drop as
+    select athlete_id, peak_weight, peak_on, peak_score, peak_place
+    from ajr.athlete_summary
+    where peak_place is not null and peak_on < cast(:rated_from as date)
+""")
+
+# The nations of the Explore list and the country page's switcher (api.nations): every
+# nation with a rated athlete, how many, and how many stand in a table today. Built
+# here so the function reads 2 pages, not athlete_summary and athlete whole.
+NATION_SUMMARY = text("""
+    insert into ajr.nation_summary (country_id, country, name, athletes, active)
+    select co.id, co.ioc, co.name, count(*), count(s.place)
+    from ajr.athlete_summary s
+    join ajr.athlete a on a.id = s.athlete_id
+    join ajr.country co on co.id = a.country_id
+    where co.ioc is not null
+    group by co.id, co.ioc, co.name
 """)
 
 # Every rated contest (a real fight: ajr/rating/engine.py) of the competitions from a year on,
@@ -258,6 +303,47 @@ ATHLETE_COMPETITION = text("""
     left join one_final o on o.competition_id = b.competition_id and o.weight = b.weight
 """)
 
+# The facts api.athlete_history shows beside a rating row, written into the row so the
+# page reads one table (docs/audits/2026-11-08-b1-plan.md): the contest's tournament,
+# round and number, the opponent's rating before the contest (their row of the same
+# contest), their name and nation as they are now, and how the athlete ended the
+# tournament (ajr.athlete_competition). Rows whose facts are already right are not
+# touched (the publish sends only changed rows); a renamed athlete or a result that
+# came in later is corrected on the next run, whatever it rated.
+HISTORY_FACTS = text("""
+    update ajr.rating_change rc
+       set competition_id = f.competition_id, round = f.round, fight_no = f.fight_no,
+           round_name = f.round_name,
+           opponent_rating_before = f.opponent_rating_before,
+           opponent_rd_before = f.opponent_rd_before,
+           opponent_family_name = f.family_name, opponent_given_name = f.given_name,
+           opponent_country = f.ioc, result = f.result
+      from (
+          select rc.contest_id, rc.athlete_id,
+                 ct.competition_id, ct.round, ct.fight_no, ct.round_name,
+                 orc.rating_before as opponent_rating_before,
+                 orc.rd_before as opponent_rd_before,
+                 o.family_name, o.given_name, co.ioc, r.result
+          from ajr.rating_change rc
+          join ajr.contest ct on ct.id = rc.contest_id
+          join ajr.rating_change orc
+              on orc.contest_id = rc.contest_id and orc.athlete_id = rc.opponent_id
+          join ajr.athlete o on o.id = rc.opponent_id
+          left join ajr.country co on co.id = o.country_id
+          left join ajr.athlete_competition r
+              on r.athlete_id = rc.athlete_id and r.competition_id = ct.competition_id
+             and r.weight = ct.weight
+      ) f
+     where f.contest_id = rc.contest_id and f.athlete_id = rc.athlete_id
+       and (rc.competition_id, rc.round, rc.fight_no, rc.round_name,
+            rc.opponent_rating_before, rc.opponent_rd_before,
+            rc.opponent_family_name, rc.opponent_given_name, rc.opponent_country, rc.result)
+           is distinct from
+           (f.competition_id, f.round, f.fight_no, f.round_name,
+            f.opponent_rating_before, f.opponent_rd_before,
+            f.family_name, f.given_name, f.ioc, f.result)
+""")
+
 # Per nation and tournament (individual ones): its athletes and their medals.
 NATION_COMPETITION = text("""
     insert into ajr.nation_competition
@@ -288,9 +374,11 @@ TEAMS_SNAPSHOT = text("""
 """)
 
 
-def refresh_snapshot(session: Session) -> None:
+def refresh_snapshot(session: Session, rated_from: date = date.min) -> None:
     """Replace today's tables, nations rankings and the Explore summaries (in the
-    caller's transaction, so the site never sees them empty)."""
+    caller's transaction, so the site never sees them empty), and set the history
+    rows' facts. `rated_from`: the day from which the rating was rewritten (date.max:
+    nothing was), for the places on the days of the peaks."""
     session.execute(text("delete from ajr.leaderboard_snapshot"))
     rows = session.execute(REBUILD, {"weights": WEIGHTS}).rowcount
     logger.info("Leaderboard snapshot: %d rows", rows)
@@ -303,14 +391,20 @@ def refresh_snapshot(session: Session) -> None:
     session.execute(text("delete from ajr.athlete_competition"))
     rows = session.execute(ATHLETE_COMPETITION).rowcount
     logger.info("Athlete competitions: %d rows", rows)
+    rows = session.execute(HISTORY_FACTS).rowcount
+    logger.info("History facts: %d rows", rows)
     session.execute(text("delete from ajr.nation_competition"))
     rows = session.execute(NATION_COMPETITION).rowcount
     logger.info("Nation competitions: %d rows", rows)
     session.execute(text("delete from ajr.competition_stats"))
     session.execute(COMPETITION_STATS)
+    session.execute(PREVIOUS_PEAKS, {"rated_from": rated_from})
     session.execute(text("delete from ajr.athlete_summary"))
     rows = session.execute(ATHLETE_SUMMARY).rowcount
+    session.execute(text("drop table previous_peaks"))
     logger.info("Athlete summary: %d rows", rows)
+    session.execute(text("delete from ajr.nation_summary"))
+    session.execute(NATION_SUMMARY)
     refresh_chances(session)
 
 
