@@ -339,7 +339,6 @@ class LeaderboardSnapshot(SQLModel, table=True):
         # The top places of every weight (the home page).
         Index("ix_leaderboard_snapshot_place", "place"),
         # A nation's best athletes (the country page).
-        Index("ix_leaderboard_snapshot_country_score", "country", text("score desc")),
         # A nation's best athlete in each weight (api.country_leaders), from the index alone.
         Index(
             "ix_leaderboard_snapshot_country_leaders",

@@ -25,6 +25,7 @@ def test_competitions():
             update(Competition).where(Competition.id == 10).values(rank_name="Grand Slam")
         )
         session.commit()
+    refresh()  # the list shows the tournament as the rating job copied it
 
     rows = call("select * from api.competitions()")
     slams = call("select * from api.competitions(null, array['Grand Slam'])")

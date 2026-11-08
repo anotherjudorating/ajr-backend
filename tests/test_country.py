@@ -62,6 +62,7 @@ def test_country():
         (TODAY - timedelta(days=93), 2, 2, 1400),
         (TODAY - timedelta(days=200), 1, 3, 1300),
     )
+    refresh()  # the page's numbers come from the rating job's run
 
     [japan] = call("select * from api.country('JPN')")
 
