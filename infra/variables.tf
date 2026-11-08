@@ -77,3 +77,15 @@ variable "domain" {
   type        = string
   default     = "anotherjudorating.com"
 }
+
+variable "r2_access_key_id" {
+  description = "R2 API token 'ajr-data uploads' (Object Read & Write, bucket ajr-data): Access Key ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = "The same token's Secret Access Key"
+  type        = string
+  sensitive   = true
+}

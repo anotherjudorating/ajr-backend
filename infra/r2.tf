@@ -41,3 +41,29 @@ resource "cloudflare_r2_bucket_lifecycle" "data" {
     }
   }]
 }
+
+# The update job uploads the files with these (ajr.tables): an R2 API token limited to
+# Object Read & Write on ajr-data, made in the dashboard (R2 → Manage API tokens).
+resource "github_actions_secret" "r2_access_key_id" {
+  repository      = github_repository.backend.name
+  secret_name     = "R2_ACCESS_KEY_ID"
+  plaintext_value = var.r2_access_key_id
+}
+
+resource "github_actions_secret" "r2_secret_access_key" {
+  repository      = github_repository.backend.name
+  secret_name     = "R2_SECRET_ACCESS_KEY"
+  plaintext_value = var.r2_secret_access_key
+}
+
+resource "github_actions_variable" "r2_account_id" {
+  repository    = github_repository.backend.name
+  variable_name = "R2_ACCOUNT_ID"
+  value         = var.cloudflare_account_id
+}
+
+resource "github_actions_variable" "r2_bucket" {
+  repository    = github_repository.backend.name
+  variable_name = "R2_BUCKET"
+  value         = cloudflare_r2_bucket.data.name
+}
