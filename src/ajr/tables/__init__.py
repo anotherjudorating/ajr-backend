@@ -1,14 +1,14 @@
 """Past days' ranking tables and the open-data archive, as files in Cloudflare R2.
 
-A past day's table never changes unless the rating does (a new formula, or results
-corrected back in time), so it is computed once and served as a file from
+A past week's table (one a week, on Monday) never changes unless the rating does (a
+new formula, or results corrected back in time), so it is computed once and served from
 data.anotherjudorating.com through the Cloudflare edge, not by the database on every
 visit (docs/audits/2026-11-08-r2-tables-plan.md). Today's tables stay in the database.
 
 Layout of the bucket:
 
     manifest.json                                         what the site reads first
-    v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
+    v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json   (Mondays)
     v/<version>/p4p/<men|women>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     v/<version>/teams/<men|women|mixed>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz
@@ -41,8 +41,8 @@ from psycopg import Connection
 
 logger = logging.getLogger(__name__)
 
-FORMAT = 1  # raised when the files' content changes without the rating settings
-FIRST_DAY = date(2009, 1, 1)  # earlier days stay with the database (rarely opened)
+FORMAT = 2  # raised when the files' content changes without the rating settings (2: weekly)
+FIRST_DAY = date(2009, 1, 5)  # the first Monday of 2009; earlier days stay with the database
 WEIGHTS = ["-60", "-66", "-73", "-81", "-90", "-100", "+100",
            "-48", "-52", "-57", "-63", "-70", "-78", "+78"]  # fmt: skip
 GENDERS = ["men", "women"]
@@ -110,8 +110,18 @@ class Plan:
     delete: list[str] = field(default_factory=list)  # old prefixes to remove
 
 
+def monday(day: date) -> date:
+    """The Monday of `day`'s week (the day itself on a Monday)."""
+    return day - timedelta(days=day.weekday())
+
+
 def days_between(first: date, last: date) -> list[date]:
-    return [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    """The Mondays from `first` to `last`: a table a week. Between tournaments a table
+    barely moves (scores slide as RD grows), and tournaments end at weekends, so a
+    Monday's table is the state after the weekend's events; the site shows a day's
+    table as its week's Monday's."""
+    start = monday(first) + (timedelta(days=7) if first.weekday() else timedelta(0))
+    return [start + timedelta(days=7 * i) for i in range(max(0, (last - start).days // 7 + 1))]
 
 
 def make_plan(
@@ -289,7 +299,7 @@ def publish(
         not full
         and state.pending_from is None
         and state.version == current
-        and state.last_day == today - timedelta(days=1)
+        and state.last_day == monday(today - timedelta(days=1))
     ):
         # nothing stale and nothing new: no request to R2 at all (most runs)
         return Result(Plan(current, False, [], 0), 0, 0, 0)
