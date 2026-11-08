@@ -10,14 +10,17 @@ from ajr.core.db import engine
 from ajr.core.job_run import job_run
 from ajr.core.models import (
     Athlete,
+    AthleteSummary,
     Competition,
     Contest,
     ContestWalkover,
     Country,
     JobRun,
+    NationSummary,
     RatingChange,
     RatingSettings,
 )
+from ajr.rating import snapshot
 from ajr.rating.__main__ import main
 from ajr.rating.engine import RatingParams
 from ajr.rating.job import LATEST, RatingCheckError, run_rating
@@ -558,3 +561,106 @@ def text_(sql: str):
     from sqlalchemy import text
 
     return text(sql)
+
+
+# --- the facts the athlete's page reads (docs/audits/2026-11-08-b1-plan.md) ---
+
+
+def summaries() -> dict[int, dict]:
+    with Session(engine) as session:
+        return {s.athlete_id: s.model_dump() for s in session.exec(select(AthleteSummary))}
+
+
+def test_history_rows_carry_their_facts():
+    add_contests()
+    with Session(engine) as session:
+        session.execute(
+            update(Contest).where(Contest.id == 101).values(round_name="Final", fight_no=7)
+        )
+        session.commit()
+
+    rate()
+
+    rows = changes()
+    row = rows[(101, 1)]
+    assert (row.competition_id, row.round, row.fight_no, row.round_name) == (10, 0, 7, "Final")
+    assert row.opponent_rating_before == rows[(101, 2)].rating_before
+    assert row.opponent_rd_before == rows[(101, 2)].rd_before
+    assert (row.opponent_family_name, row.opponent_country) == ("A2", "JPN")
+
+
+def test_facts_follow_a_renamed_opponent():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.execute(update(Athlete).where(Athlete.id == 2).values(family_name="Renamed"))
+        session.commit()
+
+    rate()  # no result changed
+
+    assert changes()[(101, 1)].opponent_family_name == "Renamed"
+
+
+def test_rows_without_facts_fail_the_check(monkeypatch):
+    add_contests()
+    monkeypatch.setattr(snapshot, "HISTORY_FACTS", text_("select 1"))
+
+    with pytest.raises(RatingCheckError, match="without their history facts"):
+        rate()
+
+
+def test_the_page_values_are_as_after_a_full_run():
+    add_contests()
+    rate()
+    with Session(engine) as session:
+        session.add(Competition(id=30, name="Later", date_from=date(2026, 9, 1)))
+        session.flush()
+        session.add(contest(301, 30, blue=3, white=1, winner=3, weight="-73"))
+        session.commit()
+    mark_changed(30)
+    rate()
+    since_change = summaries()
+
+    rate(full=True)
+
+    assert summaries() == since_change
+    one = since_change[1]
+    assert one["rating"] is not None and one["score_today"] is not None
+    assert one["peak_on"] is not None
+
+
+def test_nations_count_their_rated_athletes():
+    add_contests()
+
+    rate()
+
+    with Session(engine) as session:
+        nations = session.exec(select(NationSummary)).all()
+    assert [(n.country, n.athletes) for n in nations] == [("JPN", 3)]
+
+
+def peak_place_from_the_table(athlete_id: int) -> int | None:
+    with Session(engine) as session:
+        return session.execute(
+            text_(
+                "select b.place from ajr.athlete_summary s"
+                " cross join lateral ajr.board_at(s.peak_weight, s.peak_on) b"
+                " where s.athlete_id = :a and b.athlete_id = :a"
+            ),
+            {"a": athlete_id},
+        ).scalar()
+
+
+def test_the_peak_place_follows_a_corrected_history():
+    add_contests()
+    rate()
+    assert summaries()[3]["peak_place"] == peak_place_from_the_table(3)
+    with Session(engine) as session:  # judobase corrected the March contest
+        session.execute(update(Contest).where(Contest.id == 102).values(winner_id=1))
+        session.commit()
+    mark_changed(10)
+
+    rate()
+
+    assert summaries()[3]["peak_place"] == peak_place_from_the_table(3)
+    assert summaries()[1]["peak_place"] == peak_place_from_the_table(1)
