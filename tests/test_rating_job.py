@@ -12,6 +12,7 @@ from ajr.core.models import (
     Athlete,
     AthleteSummary,
     Competition,
+    CompetitionStats,
     Contest,
     ContestWalkover,
     Country,
@@ -664,3 +665,70 @@ def test_the_peak_place_follows_a_corrected_history():
 
     assert summaries()[3]["peak_place"] == peak_place_from_the_table(3)
     assert summaries()[1]["peak_place"] == peak_place_from_the_table(1)
+
+
+# --- the facts the tournament and country pages read (docs/audits/2026-11-08-b2-plan.md) ---
+
+
+def test_the_contest_list_has_the_scores_and_the_walkovers():
+    add_contests()
+    with Session(engine) as session:
+        session.add(contest(103, 10, blue=2, white=3, winner=2, weight="-73"))
+        session.flush()
+        session.add(ContestWalkover(contest_id=103, reason="fusen"))
+        session.commit()
+
+    rate()
+
+    with Session(engine) as session:
+        rows = {
+            r["contest_id"]: r
+            for r in session.execute(text_("select * from ajr.contest_list")).mappings()
+        }
+    assert {101, 103} <= set(rows), sorted(rows)
+    rated, walkover = rows[101], rows[103]
+    assert rated["real_fight"] and rated["white_score_before"] is not None
+    assert rated["blue_score_after"] is not None
+    assert not walkover["real_fight"]
+    assert walkover["white_chance"] is None and walkover["white_score_before"] is None
+
+
+def test_tournament_and_nation_facts():
+    add_contests()
+
+    rate()
+
+    with Session(engine) as session:
+        result = session.execute(
+            text_(
+                "select family_name, country from ajr.athlete_competition"
+                " where athlete_id = 1 and competition_id = 10"
+            )
+        ).one()
+        stats = session.exec(
+            select(CompetitionStats).where(CompetitionStats.competition_id == 10)
+        ).one()
+        nations = session.execute(
+            text_("select country, date_from from ajr.nation_competition where competition_id = 10")
+        ).all()
+        summary = session.exec(select(NationSummary)).one()
+    assert tuple(result) == ("A1", "JPN")
+    assert (stats.name, stats.date_from) == ("Grand Slam", date(2026, 3, 1))
+    assert nations == [("JPN", date(2026, 3, 1))]
+    assert summary.top1 is not None and summary.top8 is not None
+
+
+def test_a_run_without_new_results_completes_a_list_a_migration_left_incomplete():
+    add_contests()
+    rate()
+    with Session(engine) as session:  # as after a migration adding the scores
+        session.execute(text_("update ajr.contest_list set white_score_before = null"))
+        session.commit()
+
+    rate()  # no result changed
+
+    with Session(engine) as session:
+        missing = session.execute(
+            text_("select count(*) from ajr.contest_list where white_score_before is null")
+        ).scalar()
+    assert missing == 0
