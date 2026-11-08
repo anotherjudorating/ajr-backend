@@ -70,9 +70,11 @@ def run_rating(
         rated_from = date.min  # the places on the days of the peaks: all again
         if needs_full_run(session, params, ranking):
             rate_everything(session, params, ranking)
+            save_settings(session, params, ranking)
             refresh_contest_list(session, None)
         elif full:
             corrected = rate_everything(session, params, ranking, compare=True)
+            save_settings(session, params, ranking)
             refresh_contest_list(session, None)
             rated_from = date.min if corrected else date.max
         else:
@@ -86,9 +88,9 @@ def run_rating(
                 session.commit()
                 return RatingRun(changed=site_visible_state(session) != before)
             rate_since(session, since, params, ranking)
+            save_settings(session, params, ranking)
             refresh_contest_list(session, since.year)
             rated_from = since
-        session.merge(settings(params, ranking))
         refresh_snapshot(session, rated_from)
         check_rating(session)
         session.commit()
@@ -147,6 +149,20 @@ FACTS_CHECK = text("""
 """)
 
 
+# Every contest list row is consistent: a rated one has its chances and scores, a
+# walkover none; every nation's tournament has its IOC code and day.
+LIST_CHECK = text("""
+    select count(*) from ajr.contest_list
+    where (real_fight and (white_score_before is null or white_score_after is null
+                           or blue_score_before is null or blue_score_after is null
+                           or white_chance is null or winner_chance is null))
+       or (not real_fight and (white_chance is not null or white_score_before is not null))
+""")
+NATION_COMPETITION_CHECK = text("""
+    select count(*) from ajr.nation_competition where country is null or date_from is null
+""")
+
+
 def check_rating(session: Session) -> None:
     """Every contest has two rows, every athlete one latest row and a history in time
     order, and the Explore summary has every rated athlete."""
@@ -164,8 +180,19 @@ def check_rating(session: Session) -> None:
         )
     if facts := session.execute(FACTS_CHECK).scalar_one():
         problems.append(f"{facts} rating rows without their history facts")
+    if rows := session.execute(LIST_CHECK).scalar_one():
+        problems.append(f"{rows} contest list rows inconsistent with their kind")
+    if rows := session.execute(NATION_COMPETITION_CHECK).scalar_one():
+        problems.append(f"{rows} nation tournaments without their nation or day")
     if problems:
         raise RatingCheckError("; ".join(problems))
+
+
+def save_settings(session: Session, params: RatingParams, ranking: RankingParams) -> None:
+    """The parameters the rows were just computed with, before the lists built from
+    them read rd_factor (ajr/rating/snapshot.py)."""
+    session.merge(settings(params, ranking))
+    session.flush()
 
 
 def settings(params: RatingParams, ranking: RankingParams) -> RatingSettings:

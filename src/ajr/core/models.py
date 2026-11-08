@@ -340,6 +340,15 @@ class LeaderboardSnapshot(SQLModel, table=True):
         Index("ix_leaderboard_snapshot_place", "place"),
         # A nation's best athletes (the country page).
         Index("ix_leaderboard_snapshot_country_score", "country", text("score desc")),
+        # A nation's best athlete in each weight (api.country_leaders), from the index alone.
+        Index(
+            "ix_leaderboard_snapshot_country_leaders",
+            "country",
+            "weight",
+            text("score desc"),
+            "place",
+            postgresql_include=["athlete_id", "family_name", "given_name"],
+        ),
         {"schema": SCHEMA},
     )
 
@@ -390,6 +399,14 @@ class CompetitionStats(SQLModel, table=True):
     contests: int  # real fights: no byes, no 0:00 walkovers
     accuracy: float | None = None  # share of them the favourite won
     upsets: int  # won with a chance of 35% or less
+    # the tournament as the run saw it, so the tournaments list reads this table alone
+    name: str | None = None
+    rank_name: str | None = None
+    city: str | None = None
+    country: str | None = None  # IOC
+    country_name: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
 
 class AthleteSummary(SQLModel, table=True):
@@ -451,3 +468,16 @@ class NationSummary(SQLModel, table=True):
     name: str | None = None
     athletes: int
     active: int  # in a weight's table today
+    # the country page's numbers (api.country): places in today's nations tables
+    # (mixed, men, women) and the mixed rating, 90 days and 6 months ago, and the best
+    # score and the average of the best 8 today
+    place: int | None = None
+    place_men: int | None = None
+    place_women: int | None = None
+    rating: int | None = None
+    place_90d: int | None = None
+    rating_90d: int | None = None
+    place_6m: int | None = None
+    rating_6m: int | None = None
+    top1: int | None = None
+    top8: int | None = None

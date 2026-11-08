@@ -44,15 +44,22 @@ REBUILD = text("""
 # Every rated contest (a real fight: ajr/rating/engine.py). An upset: the winner's
 # chance <= 35%.
 COMPETITION_STATS = text("""
-    insert into ajr.competition_stats (competition_id, contests, accuracy, upsets)
+    insert into ajr.competition_stats
+        (competition_id, contests, accuracy, upsets,
+         name, rank_name, city, country, country_name, date_from, date_to)
     select ct.competition_id,
            count(*),
            avg((rc.win_probability > 0.5)::int) filter (where rc.win_probability <> 0.5),
-           count(*) filter (where rc.win_probability <= 0.35)
+           count(*) filter (where rc.win_probability <= 0.35),
+           -- what the tournaments list shows of it (api.competitions reads this table)
+           cm.name, cm.rank_name, cm.city, co.ioc, co.name, cm.date_from, cm.date_to
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
+    join ajr.competition cm on cm.id = ct.competition_id
+    left join ajr.country co on co.id = cm.country_id
     where rc.won
-    group by ct.competition_id
+    group by ct.competition_id, cm.name, cm.rank_name, cm.city, co.ioc, co.name,
+             cm.date_from, cm.date_to
 """)
 
 # Also what the athlete's page shows (api.athlete), once per run instead of per request:
@@ -143,28 +150,68 @@ PREVIOUS_PEAKS = text("""
 # The nations of the Explore list and the country page's switcher (api.nations): every
 # nation with a rated athlete, how many, and how many stand in a table today. Built
 # here so the function reads 2 pages, not athlete_summary and athlete whole.
+# Also the country page's numbers (api.country): its places in today's nations tables,
+# the mixed rating then and 90 days and 6 months ago (ajr.nation_history, which the
+# records job writes), and its best scores today.
 NATION_SUMMARY = text("""
-    insert into ajr.nation_summary (country_id, country, name, athletes, active)
-    select co.id, co.ioc, co.name, count(*), count(s.place)
-    from ajr.athlete_summary s
-    join ajr.athlete a on a.id = s.athlete_id
-    join ajr.country co on co.id = a.country_id
-    where co.ioc is not null
-    group by co.id, co.ioc, co.name
+    insert into ajr.nation_summary
+        (country_id, country, name, athletes, active,
+         place, place_men, place_women, rating,
+         place_90d, rating_90d, place_6m, rating_6m, top1, top8)
+    with nations as (
+        select co.id, co.ioc, co.name, count(*) as athletes, count(s.place) as active
+        from ajr.athlete_summary s
+        join ajr.athlete a on a.id = s.athlete_id
+        join ajr.country co on co.id = a.country_id
+        where co.ioc is not null
+        group by co.id, co.ioc, co.name
+    ),
+    weeks as (
+        select (select max(day) from ajr.nation_history where day <= current_date - 90) as d90,
+               (select max(day) from ajr.nation_history
+                where day <= current_date - interval '6 months') as m6
+    )
+    select n.id, n.ioc, n.name, n.athletes, n.active,
+           mixed.place, men.place, women.place, mixed.rating,
+           d90.place, d90.rating, m6.place, m6.rating, best.top1, best.top8
+    from nations n
+    cross join weeks w
+    left join ajr.nation_snapshot mixed on mixed.kind = 'mixed' and mixed.country_id = n.id
+    left join ajr.nation_snapshot men on men.kind = 'men' and men.country_id = n.id
+    left join ajr.nation_snapshot women on women.kind = 'women' and women.country_id = n.id
+    left join ajr.nation_history d90 on d90.country_id = n.id and d90.day = w.d90
+    left join ajr.nation_history m6 on m6.country_id = n.id and m6.day = w.m6
+    cross join lateral (
+        select max(top.score)::integer as top1, round(avg(top.score))::integer as top8
+        from (select l.score from ajr.leaderboard_snapshot l
+              where l.country = n.ioc order by l.score desc limit 8) top
+    ) best
 """)
 
 # Every rated contest (a real fight: ajr/rating/engine.py) of the competitions from a year on,
 # both athletes with their chance and rating change, as api.contests lists them.
 CONTEST_LIST = text("""
     insert into ajr.contest_list
+        (contest_id, competition_id, competition, year, day, weight, round, round_no,
+         fight_no, winner_id, white_id, white_family_name, white_given_name, white_country,
+         white_chance, white_change, blue_id, blue_family_name, blue_given_name,
+         blue_country, blue_chance, blue_change, winner_chance,
+         white_score_before, white_score_after, blue_score_before, blue_score_after,
+         real_fight)
     select ct.id, ct.competition_id, cm.name, extract(year from cm.date_from)::integer,
            w.fought_on, ct.weight, ct.round_name, ct.round, ct.fight_no, ct.winner_id,
            ct.white_id, wa.family_name, wa.given_name, wc.ioc, w.win_probability,
            round(w.rating_after - w.rating_before)::integer,
            ct.blue_id, ba.family_name, ba.given_name, bc.ioc, b.win_probability,
            round(b.rating_after - b.rating_before)::integer,
-           case when ct.winner_id = ct.white_id then w.win_probability else b.win_probability end
+           case when ct.winner_id = ct.white_id then w.win_probability else b.win_probability end,
+           round(w.rating_before - s.rd_factor * w.rd_before)::integer,
+           round(w.rating_after - s.rd_factor * w.rd_after)::integer,
+           round(b.rating_before - s.rd_factor * b.rd_before)::integer,
+           round(b.rating_after - s.rd_factor * b.rd_after)::integer,
+           true
     from ajr.competition cm
+    cross join ajr.rating_settings s
     join ajr.contest ct on ct.competition_id = cm.id
     -- A contest has two rows, one per athlete: "not the other one" picks the same row,
     -- and the planner estimates it right (two equalities together it multiplies into
@@ -176,6 +223,29 @@ CONTEST_LIST = text("""
     join ajr.athlete ba on ba.id = ct.blue_id
     left join ajr.country bc on bc.id = ba.country_id
     where (cast(:since as integer) is null
+           or cm.date_from >= make_date(cast(:since as integer), 1, 1))
+    union all
+    -- The walkovers of the categories the rating counts, as the bracket shows them
+    -- (api.competition_contests): part of it, not rated. The day as
+    -- ajr/rating/engine.py dates a contest.
+    select ct.id, ct.competition_id, cm.name, extract(year from cm.date_from)::integer,
+           case when ct.started_at::date
+                     between cm.date_from - 1 and coalesce(cm.date_to, cm.date_from) + 1
+                then ct.started_at::date else cm.date_from end,
+           ct.weight, ct.round_name, ct.round, ct.fight_no, ct.winner_id,
+           ct.white_id, wa.family_name, wa.given_name, wc.ioc, null, null,
+           ct.blue_id, ba.family_name, ba.given_name, bc.ioc, null, null,
+           null, null, null, null, null, false
+    from ajr.contest_walkover cw
+    join ajr.contest ct on ct.id = cw.contest_id
+    join ajr.competition cm on cm.id = ct.competition_id
+    join ajr.athlete wa on wa.id = ct.white_id
+    left join ajr.country wc on wc.id = wa.country_id
+    join ajr.athlete ba on ba.id = ct.blue_id
+    left join ajr.country bc on bc.id = ba.country_id
+    where ct.winner_id is not null and cm.kind = 'individual'
+      and ct.weight = any(cast(:weights as text[]))
+      and (cast(:since as integer) is null
            or cm.date_from >= make_date(cast(:since as integer), 1, 1))
 """)
 CONTEST_LIST_DELETE = text("""
@@ -190,7 +260,7 @@ def refresh_contest_list(session: Session, since: int | None) -> None:
     if since is not None and session.execute(IS_EMPTY).scalar():
         since = None
     session.execute(CONTEST_LIST_DELETE, {"since": since})
-    rows = session.execute(CONTEST_LIST, {"since": since}).rowcount
+    rows = session.execute(CONTEST_LIST, {"since": since, "weights": WEIGHTS}).rowcount
     logger.info("Contest list from %s: %d rows", since or "the start", rows)
 
 
@@ -296,10 +366,15 @@ ATHLETE_COMPETITION = text("""
         group by athlete_id, competition_id, weight
         having count(seq) > 0
     )
+    -- names, gender and nation as they are at the run, so the tournament's results
+    -- read one table; a rename or a new nation comes with the next run
     select b.athlete_id, b.competition_id, b.weight,
            case when o.weight is not null then ajr.result_label(b.last_round, b.last_won) end,
-           round(b.score_before), round(b.score_after), b.contests, b.wins, b.contests_before
+           round(b.score_before), round(b.score_after), b.contests, b.wins, b.contests_before,
+           a.family_name, a.given_name, a.gender, co.ioc
     from by_athlete b
+    join ajr.athlete a on a.id = b.athlete_id
+    left join ajr.country co on co.id = a.country_id
     left join one_final o on o.competition_id = b.competition_id and o.weight = b.weight
 """)
 
@@ -347,16 +422,20 @@ HISTORY_FACTS = text("""
 # Per nation and tournament (individual ones): its athletes and their medals.
 NATION_COMPETITION = text("""
     insert into ajr.nation_competition
-        (country_id, competition_id, athletes, gold, silver, bronze)
+        (country_id, competition_id, athletes, gold, silver, bronze, country, date_from)
     select a.country_id, r.competition_id, count(distinct r.athlete_id),
            count(*) filter (where r.result = 'gold'),
            count(*) filter (where r.result = 'silver'),
-           count(*) filter (where r.result = 'bronze')
+           count(*) filter (where r.result = 'bronze'),
+           -- the nation's IOC code and the tournament's day: api.country_tournaments
+           -- walks its index from the latest
+           co.ioc, cm.date_from
     from ajr.athlete_competition r
     join ajr.athlete a on a.id = r.athlete_id
+    join ajr.country co on co.id = a.country_id
     join ajr.competition cm on cm.id = r.competition_id
-    where a.country_id is not null and not coalesce(cm.is_teams, false)
-    group by a.country_id, r.competition_id
+    where not coalesce(cm.is_teams, false)
+    group by a.country_id, co.ioc, r.competition_id, cm.date_from
 """)
 
 # Today's pound-for-pound and nations tables, as api.p4p and api.teams serve them.
@@ -427,4 +506,16 @@ def refresh_chances(session: Session, today: date | None = None) -> None:
                     values (:competition_id, :weight, :athlete_id, :gold, :medal)"""),
             rows,
         )
+        session.execute(MEDAL_CHANCE_FACTS)
     logger.info("Medal chances: %d rows", len(rows))
+
+
+# The names and nation the chances table shows, written into the row
+# (api.competition_chances reads one table); a renamed athlete is corrected next run.
+MEDAL_CHANCE_FACTS = text("""
+    update ajr.medal_chance mc
+       set family_name = a.family_name, given_name = a.given_name, country = co.ioc
+      from ajr.athlete a
+      left join ajr.country co on co.id = a.country_id
+     where a.id = mc.athlete_id
+""")

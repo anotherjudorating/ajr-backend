@@ -279,7 +279,14 @@ def delete(remote: Connection, staged: Staged) -> int:
 # a swapped one is swapped with it, whatever changed in it: its foreign key must point
 # at the new table. `python -m ajr.publish rebuild <table>` swaps one in order again
 # when the 15-minute publishes have scattered its new rows.
-SWAP_ORDER = {"rating_change": ["athlete_id", "seq"]}
+SWAP_ORDER = {
+    "rating_change": ["athlete_id", "seq"],  # an athlete's history (api.athlete_history)
+    # a tournament's contests and results (api.competition_contests, api.competition_results);
+    # competition ids grow with time, so a year's contests (api.contests) sit together too
+    "contest_list": ["competition_id", "weight", "round_no", "fight_no"],
+    "athlete_competition": ["competition_id", "weight", "athlete_id"],
+    "nation_competition": ["country", "date_from", "competition_id"],  # api.country_tournaments
+}
 SWAP_LOCK_TIMEOUT = "5s"  # the renames wait for reads in flight; longer: the next run
 NEW = "__new"
 OLD = "__old"

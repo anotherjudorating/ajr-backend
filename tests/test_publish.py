@@ -322,6 +322,9 @@ def test_a_whole_table_with_a_declared_order_is_built_and_swapped(connections):
 
     assert changes["rating_change"].swapped and changes["rating_change"].whole
     assert changes["rating_listing"].swapped  # it refers to rating_change
+    # the tournament and country pages' tables, in their own orders
+    for table in ("contest_list", "athlete_competition", "nation_competition"):
+        assert changes[table].swapped, table
     assert not changes["contest"].swapped
     assert_same(local, remote)
     # stored in the declared order
