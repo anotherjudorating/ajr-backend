@@ -84,7 +84,7 @@ export TF_VAR_supabase_publishable_key=…     # нужен ajr-web/infra
 set -a; . ~/.config/ajr/terraform.env; set +a
 cd ~/Projects/anotherjudorating/ajr-backend/infra
 mkdir -p ~/.config/ajr/tfstate/backup && chmod 700 ~/.config/ajr/tfstate
-terraform init -backend-config="path=$HOME/.config/ajr/tfstate/ajr-backend.tfstate"
+terraform init -backend-config="endpoints={s3=\"https://$TF_VAR_cloudflare_account_id.r2.cloudflarestorage.com\"}"   # state in R2 (ajr-terraform-state)
 terraform plan -out=import.plan            # только чтение; все import-блоки сразу
 ```
 
@@ -144,3 +144,12 @@ terraform apply                             # Supabase и всё остальн�
    оставить `wrangler secret put` и `wrangler dev`.
 3. Дрейф-план в Actions (черновик в плане 11-06, §3.2) — только когда захочется
    класть read-only токены в secrets репо.
+
+
+## State в R2 (с 2026-11-08)
+
+State лежит в приватном бакете R2 `ajr-terraform-state` (ключ `backend/terraform.tfstate`,
+блокировка — объект рядом, `use_lockfile`). Доступ — отдельный R2 API token (Object Read & Write
+только на этот бакет) в `~/.config/ajr/terraform.env`: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+Перенос с локального файла был одной командой (`terraform init -migrate-state` с той же
+`-backend-config`); локальные файлы в `~/.config/ajr/tfstate/` остались резервной копией.

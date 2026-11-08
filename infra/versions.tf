@@ -12,12 +12,22 @@ terraform {
     cloudflare = { source = "cloudflare/cloudflare", version = "~> 5.28" } # 5.28.1 (2026-10-20); v4 is in maintenance
   }
 
-  # Local state, git-ignored (*.tfstate*). One operator, one machine, applies only
-  # by hand: a remote backend would add a bucket, a token and a lock to maintain
-  # for nothing. The state holds secrets (the database password, DATABASE_URL,
-  # REVALIDATE_SECRET), so it is kept outside the repository:
-  #   terraform init -backend-config="path=$HOME/.config/ajr/tfstate/ajr-backend.tfstate"
-  # and backed up with `terraform state pull` before each apply (README). Moving
-  # to R2 (S3 backend) or HCP Terraform later is `terraform init -migrate-state`.
-  backend "local" {}
+  # State in R2 (bucket ajr-terraform-state, ajr-backend/infra/r2.tf), read with its own
+  # R2 API token (Object Read & Write on that bucket only): AWS_ACCESS_KEY_ID and
+  # AWS_SECRET_ACCESS_KEY from ~/.config/ajr/terraform.env. The endpoint is given at init
+  # (-backend-config="endpoints={s3=\"https://<account id>.r2.cloudflarestorage.com\"}"),
+  # as a backend cannot read variables; README has the line. use_lockfile: a lock
+  # object beside the state stops two applies at once.
+  backend "s3" {
+    bucket                      = "ajr-terraform-state"
+    key                         = "backend/terraform.tfstate"
+    region                      = "auto"
+    use_lockfile                = true
+    use_path_style              = true
+    skip_credentials_validation = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_metadata_api_check     = true
+    skip_s3_checksum            = true
+  }
 }
