@@ -36,7 +36,7 @@ NOT_PUBLISHED = {
 # Published, but not what the site's pages show: a change to them alone does not
 # make the site refresh its cache (every run logs itself in job_run; the site only
 # shows the day of the last update, which changes with today's tables anyway).
-NOT_SHOWN = {"job_run"}
+NOT_SHOWN = {"job_run", "tables_export"}  # tables_export: the R2 files' state (ajr/tables)
 # Columns the site's pages do not show: rows that differ only in them are published
 # but do not refresh the site. judobase's updated_at of a tournament moves all the
 # while it runs (its schedule, mats, contests under way), and the sync keeps it with

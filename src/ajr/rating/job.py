@@ -93,6 +93,7 @@ def run_rating(
             refresh_contest_list(session, since.year)
             rated_from = since
         refresh_snapshot(session, rated_from)
+        mark_tables_stale(session, rated_from)
         check_rating(session)
         session.commit()
     logger.info("Rating saved")
@@ -187,6 +188,22 @@ def check_rating(session: Session) -> None:
         problems.append(f"{rows} nation tournaments without their nation or day")
     if problems:
         raise RatingCheckError("; ".join(problems))
+
+
+# The past days' tables in R2 (ajr/tables) are stale from the day the rating was
+# rewritten from; the tables step after the publish computes them again.
+MARK_TABLES_STALE = text("""
+    insert into ajr.tables_export (id, pending_from) values (1, cast(:day as date))
+    on conflict (id) do update
+    set pending_from = least(coalesce(ajr.tables_export.pending_from, excluded.pending_from),
+                             excluded.pending_from),
+        updated_at = now()
+""")
+
+
+def mark_tables_stale(session: Session, rated_from: date) -> None:
+    if rated_from < date.max:
+        session.execute(MARK_TABLES_STALE, {"day": rated_from})
 
 
 def save_settings(session: Session, params: RatingParams, ranking: RankingParams) -> None:
