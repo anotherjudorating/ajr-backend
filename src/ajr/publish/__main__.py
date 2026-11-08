@@ -1,10 +1,12 @@
-"""python -m ajr.publish adopt | publish [--dry-run] | check
+"""python -m ajr.publish adopt | publish [--dry-run] | check | rebuild <table>
 
 The working copy is DATABASE_URL's database (where the jobs ran), production is
 PRODUCTION_DATABASE_URL's. In GitHub Actions, the changes are listed in the run's
 summary, and `publish` writes changed=true|false for the step that refreshes the site
 and database_mb (production's size, after compacting what it rewrote for the most
-part) for the step that warns of the plan's limit.
+part) for the step that warns of the plan's limit. `rebuild rating_change` publishes as
+`publish` does and also builds that table anew in its declared order (SWAP_ORDER),
+when the 15-minute publishes have scattered its rows (pg_stats.correlation falls).
 """
 
 import argparse
@@ -31,7 +33,8 @@ def summary(lines: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publish the working copy to production.")
-    parser.add_argument("command", choices=["adopt", "publish", "check"])
+    parser.add_argument("command", choices=["adopt", "publish", "check", "rebuild"])
+    parser.add_argument("table", nargs="?", help="rebuild: the table to build in order")
     parser.add_argument("--dry-run", action="store_true", help="publish, then roll back")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -54,7 +57,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1 if differences else 0
 
-            published = publish(local, remote, args.dry_run)
+            rebuild = {args.table} if args.command == "rebuild" and args.table else set()
+            if args.command == "rebuild" and not rebuild:
+                parser.error("rebuild needs a table")
+            published = publish(local, remote, args.dry_run, rebuild)
             changes = [c for c in published if c.upserted or c.deleted]
             compacted = [] if args.dry_run else compact(remote, changes)
             size_mb = database_size(remote) >> 20

@@ -66,6 +66,7 @@ class Change:
     whole: bool  # sent whole (its columns changed)
     # a row sent or deleted differs in a column the site shows (NOT_SHOWN_COLUMNS)
     shown: bool = True
+    swapped: bool = False  # built anew in its declared order and swapped in (SWAP_ORDER)
 
 
 # Our tables with their columns and primary key, parents before the tables that
@@ -133,11 +134,15 @@ def stream(
     query: sql.Composable,
     into: sql.Identifier,
     columns: sql.Composable,
+    freeze: bool = False,
 ) -> int:
-    """Rows of a query on the working copy into a temporary table on production; how many."""
+    """Rows of a query on the working copy into a table on production; how many.
+    `freeze`: the rows are written frozen and all-visible (the table must have been
+    created in this transaction)."""
+    options = sql.SQL("format binary, freeze" if freeze else "format binary")
     with local.cursor().copy(sql.SQL("copy ({}) to stdout (format binary)").format(query)) as out:
         with remote.cursor().copy(
-            sql.SQL("copy {} ({}) from stdin (format binary)").format(into, columns)
+            sql.SQL("copy {} ({}) from stdin ({})").format(into, columns, options)
         ) as copy:
             for block in out:
                 copy.write(block)
@@ -155,13 +160,19 @@ class Staged:
     shown: bool = True  # see Change
 
 
+def sent_whole(local: Connection, table: Table) -> bool:
+    """A table whose columns differ from its copy in `published` (a migration changed
+    it, or `published` does not have it yet) is sent whole."""
+    return columns_of(local, PUBLISHED, table.name) != table.columns
+
+
 def stage(local: Connection, remote: Connection, table: Table) -> Staged:
     """The table's rows to upsert and keys to delete (or to keep, when sent whole),
     copied into temporary tables on production."""
     ours = sql.Identifier(SCHEMA, table.name)
     theirs = sql.Identifier(PUBLISHED, table.name)
     cols, key = names(table.columns), names(table.key)
-    whole = columns_of(local, PUBLISHED, table.name) != table.columns
+    whole = sent_whole(local, table)
     if whole:
         rows = sql.SQL("select {} from {}").format(cols, ours)
         keys = sql.SQL("select {} from {}").format(key, ours)  # the ones to keep
@@ -260,6 +271,205 @@ def delete(remote: Connection, staged: Staged) -> int:
     return remote.execute(statement.format(ours, staged.keys, match)).rowcount
 
 
+# Tables published whole are not upserted row by row but built anew in this physical
+# order and swapped in by rename (docs/audits/2026-11-08-b1-plan.md §5): the rows of one
+# key then sit on few pages (an athlete's history: 64 pages instead of 440 on a copy of
+# production), the table needs no VACUUM FULL afterwards, and the disk holds the old and
+# the new table at once instead of the bloated one and its rewrite. A table referring to
+# a swapped one is swapped with it, whatever changed in it: its foreign key must point
+# at the new table. `python -m ajr.publish rebuild <table>` swaps one in order again
+# when the 15-minute publishes have scattered its new rows.
+SWAP_ORDER = {"rating_change": ["athlete_id", "seq"]}
+SWAP_LOCK_TIMEOUT = "5s"  # the renames wait for reads in flight; longer: the next run
+NEW = "__new"
+OLD = "__old"
+
+REFERRERS_QUERY = """
+    select distinct c.conrelid::regclass::text
+    from pg_constraint c
+    where c.contype = 'f' and c.confrelid = to_regclass(%s) and c.conrelid <> c.confrelid
+"""
+
+
+def swap_group(remote: Connection, tables: list[Table], swapping: set[str]) -> list[Table]:
+    """The tables to build and swap: `swapping` and every table referring to one of
+    them, parents first (as `tables` are)."""
+    group = set(swapping)
+    pending = list(swapping)
+    while pending:
+        name = pending.pop()
+        for referrer in remote.execute(REFERRERS_QUERY, [f"{SCHEMA}.{name}"]).fetchall():
+            schema, _, child = referrer[0].rpartition(".")
+            if schema != SCHEMA:
+                raise ValueError(f"{referrer[0]} refers to ajr.{name}: it cannot be swapped")
+            if child not in group:
+                group.add(child)
+                pending.append(child)
+    return [table for table in tables if table.name in group]
+
+
+def build(local: Connection, remote: Connection, table: Table, group: set[str]) -> int:
+    """ajr.<table>__new on production: the working copy's rows in the declared order
+    (the primary key's for a table swapped with its parent), with the old table's
+    indexes, keys, foreign keys (not yet validated), grants and options; how many rows."""
+    old = sql.Identifier(SCHEMA, table.name)
+    new = sql.Identifier(SCHEMA, table.name + NEW)
+    oid = remote.execute("select to_regclass(%s)::oid", [f"{SCHEMA}.{table.name}"]).fetchone()[0]
+    others = remote.execute(
+        "select count(*) from pg_constraint where conrelid = %s and contype in ('u', 'x')", [oid]
+    ).fetchone()[0]
+    triggers = remote.execute(
+        "select count(*) from pg_trigger where tgrelid = %s and not tgisinternal", [oid]
+    ).fetchone()[0]
+    policies = remote.execute(
+        "select count(*) from pg_policy where polrelid = %s", [oid]
+    ).fetchone()[0]
+    if others or triggers or policies:
+        raise ValueError(
+            f"ajr.{table.name} has constraints, triggers or policies a swap would lose"
+        )
+
+    remote.execute(sql.SQL("drop table if exists {}").format(new))
+    remote.execute(
+        sql.SQL(
+            "create table {} (like {} including defaults including constraints including storage)"
+        ).format(new, old)
+    )
+    order = SWAP_ORDER.get(table.name, table.key)
+    rows = stream(
+        local,
+        remote,
+        sql.SQL("select {} from {} order by {}").format(names(table.columns), old, names(order)),
+        new,
+        names(table.columns),
+        freeze=True,
+    )
+    # indexes after the rows (faster), the primary key's through its constraint
+    for name, definition in remote.execute(
+        """
+        select i.relname, pg_get_indexdef(i.oid)
+        from pg_index x join pg_class i on i.oid = x.indexrelid
+        where x.indrelid = %s
+          and not exists (select from pg_constraint c where c.conindid = i.oid)
+        """,
+        [oid],
+    ).fetchall():
+        head = f"INDEX {name} ON {SCHEMA}.{table.name} "
+        if head not in definition:
+            raise ValueError(f"unexpected definition of index {name}: {definition}")
+        remote.execute(
+            definition.replace(head, f"INDEX {name}{NEW} ON {SCHEMA}.{table.name}{NEW} ")
+        )
+    for name, definition, kind in remote.execute(
+        """
+        select conname, pg_get_constraintdef(oid), contype from pg_constraint
+        where conrelid = %s and contype in ('p', 'f')
+        order by contype desc
+        """,
+        [oid],
+    ).fetchall():
+        if kind == "f":
+            for parent in group:
+                definition = definition.replace(
+                    f"REFERENCES {SCHEMA}.{parent}(", f"REFERENCES {SCHEMA}.{parent}{NEW}("
+                )
+            definition += " NOT VALID"  # the rows come from a copy where it holds
+        remote.execute(
+            sql.SQL("alter table {} add constraint {} ").format(new, sql.Identifier(name + NEW))
+            + sql.SQL(definition)
+        )
+    for grantee, privilege in remote.execute(
+        """
+        select coalesce(r.rolname, 'public'), a.privilege_type
+        from pg_class c cross join aclexplode(c.relacl) a
+        left join pg_roles r on r.oid = a.grantee
+        where c.oid = %s and a.grantee <> c.relowner
+        """,
+        [oid],
+    ).fetchall():
+        remote.execute(
+            sql.SQL("grant {} on {} to {}").format(
+                sql.SQL(privilege),
+                new,
+                sql.SQL("public") if grantee == "public" else sql.Identifier(grantee),
+            )  # fmt: skip
+        )
+    options, secured = remote.execute(
+        "select reloptions, relrowsecurity from pg_class where oid = %s", [oid]
+    ).fetchone()
+    if options:
+        remote.execute(sql.SQL("alter table {} set ({})").format(new, sql.SQL(", ".join(options))))
+    if secured:
+        remote.execute(sql.SQL("alter table {} enable row level security").format(new))
+    remote.execute(sql.SQL("analyze {}").format(new))
+    return rows
+
+
+def swap(remote: Connection, group: list[Table]) -> None:
+    """Put the new tables in place of the old ones, then give their indexes and
+    constraints the old names: the last statements before the commit, so the
+    exclusive locks last milliseconds (or the publish fails after SWAP_LOCK_TIMEOUT
+    and the next run builds them again)."""
+    remote.execute(sql.SQL("set local lock_timeout = {}").format(sql.Literal(SWAP_LOCK_TIMEOUT)))
+    for table in reversed(group):  # children first
+        remote.execute(
+            sql.SQL("alter table {} rename to {}").format(
+                sql.Identifier(SCHEMA, table.name), sql.Identifier(table.name + OLD)
+            )
+        )
+    for table in group:
+        remote.execute(
+            sql.SQL("alter table {} rename to {}").format(
+                sql.Identifier(SCHEMA, table.name + NEW), sql.Identifier(table.name)
+            )
+        )
+    for table in reversed(group):
+        remote.execute(sql.SQL("drop table {}").format(sql.Identifier(SCHEMA, table.name + OLD)))
+    for table in group:
+        oid = remote.execute("select to_regclass(%s)::oid", [f"{SCHEMA}.{table.name}"]).fetchone()[
+            0
+        ]
+        for (index,) in remote.execute(
+            "select i.relname from pg_index x join pg_class i on i.oid = x.indexrelid "
+            "where x.indrelid = %s and i.relname like %s",
+            [oid, f"%{NEW}"],
+        ).fetchall():  # a primary key's index renames its constraint too
+            remote.execute(
+                sql.SQL("alter index {} rename to {}").format(
+                    sql.Identifier(SCHEMA, index), sql.Identifier(index.removesuffix(NEW))
+                )
+            )
+        for (constraint,) in remote.execute(
+            "select conname from pg_constraint where conrelid = %s and conname like %s",
+            [oid, f"%{NEW}"],
+        ).fetchall():
+            remote.execute(
+                sql.SQL("alter table {} rename constraint {} to {}").format(
+                    sql.Identifier(SCHEMA, table.name),
+                    sql.Identifier(constraint),
+                    sql.Identifier(constraint.removesuffix(NEW)),
+                )
+            )
+
+
+def validate(remote: Connection, group: list[Table]) -> None:
+    """Validate the swapped tables' foreign keys (made NOT VALID to spare a scan in the
+    publish's transaction; reads go on meanwhile). Commits."""
+    remote.execute("set statement_timeout = 0")  # this session's maintenance only
+    for table in group:
+        for (constraint,) in remote.execute(
+            "select conname from pg_constraint "
+            "where conrelid = to_regclass(%s) and not convalidated",
+            [f"{SCHEMA}.{table.name}"],
+        ).fetchall():
+            remote.execute(
+                sql.SQL("alter table {} validate constraint {}").format(
+                    sql.Identifier(SCHEMA, table.name), sql.Identifier(constraint)
+                )
+            )
+    remote.commit()
+
+
 def remember(local: Connection, tables: list[Table], changes: list[Change]) -> None:
     """Set `published` to what production now has (the working copy's rows)."""
     local.execute(sql.SQL("create schema if not exists {}").format(sql.Identifier(PUBLISHED)))
@@ -283,11 +493,14 @@ def adopt(local: Connection) -> None:
     local.commit()
 
 
-def publish(local: Connection, remote: Connection, dry_run: bool = False) -> list[Change]:
+def publish(
+    local: Connection, remote: Connection, dry_run: bool = False, rebuild: set[str] = frozenset()
+) -> list[Change]:
     """Send what changed in the working copy (`local`) to production (`remote`) in
     one transaction, then remember it in the working copy. Both connections must not
     be in autocommit mode; both are committed here. A dry run does it all on
-    production, then rolls back and remembers nothing: what would be sent."""
+    production, then rolls back and remembers nothing: what would be sent. `rebuild`:
+    tables of SWAP_ORDER to build and swap in order even if nothing changed."""
     tables = published_tables(local)
     remote_tables = {table.name: table for table in published_tables(remote)}
     for table in tables:
@@ -296,22 +509,46 @@ def publish(local: Connection, remote: Connection, dry_run: bool = False) -> lis
                 f"ajr.{table.name} differs between the working copy and production: "
                 "migrate both to the same version first"
             )
-    staged = [stage(local, remote, table) for table in tables]
+    if unknown := set(rebuild) - SWAP_ORDER.keys():
+        raise ValueError(f"only tables with a declared order can be rebuilt: {sorted(unknown)}")
+    remote.execute("set local statement_timeout = 0")  # a swap copies whole tables
+    swapping = {
+        table.name
+        for table in tables
+        if table.name in SWAP_ORDER and (table.name in rebuild or sent_whole(local, table))
+    }
+    group = swap_group(remote, tables, swapping) if swapping else []
+    group_names = {table.name for table in group}
+    staged = [stage(local, remote, table) for table in tables if table.name not in group_names]
+    built = {table.name: build(local, remote, table, group_names) for table in group}
     # Upserts parents first (a new contest needs its athletes), deletes children first
     # (an athlete can go once no contest refers to it).
     for each in staged:
         if each.upserted:
             upsert(remote, each)
     deleted = {each.table.name: delete(remote, each) for each in reversed(staged)}
+    if group:
+        swap(remote, group)
+    by_name = {each.table.name: each for each in staged}
     changes = [
-        Change(each.table.name, each.upserted, deleted[each.table.name], each.whole, each.shown)
-        for each in staged
+        Change(table.name, built[table.name], 0, True, True, swapped=True)
+        if table.name in built
+        else Change(
+            table.name,
+            by_name[table.name].upserted,
+            deleted[table.name],
+            by_name[table.name].whole,
+            by_name[table.name].shown,
+        )  # fmt: skip
+        for table in tables
     ]
     if dry_run:
         remote.rollback()
         local.rollback()
     else:
         remote.commit()
+        if group:
+            validate(remote, group)
         remember(local, tables, changes)
         local.commit()
     for change in changes:
@@ -319,7 +556,8 @@ def publish(local: Connection, remote: Connection, dry_run: bool = False) -> lis
             logger.info(
                 "%s %s: %d upserted, %d deleted%s", "Would publish" if dry_run else "Published",
                 change.table, change.upserted, change.deleted,
-                " (whole table)" if change.whole else "",
+                " (built in order and swapped)" if change.swapped
+                else " (whole table)" if change.whole else "",
             )  # fmt: skip
     return changes
 
@@ -346,8 +584,8 @@ def compact(remote: Connection, changes: list[Change]) -> list[str]:
     remote.autocommit = True
     done = []
     for change in changes:
-        if change.upserted + change.deleted < COMPACT_MIN_ROWS:
-            continue
+        if change.swapped or change.upserted + change.deleted < COMPACT_MIN_ROWS:
+            continue  # a swapped table was written compactly
         table = sql.Identifier(SCHEMA, change.table)
         size, rows = remote.execute(
             sql.SQL("select pg_table_size({}), (select count(*) from {})").format(
