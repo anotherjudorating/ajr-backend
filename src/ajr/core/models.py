@@ -144,7 +144,15 @@ class JobRun(SQLModel, table=True):
     """
 
     __tablename__ = "job_run"
-    __table_args__ = {"schema": SCHEMA}
+    __table_args__ = (
+        # api.last_update: the latest successful rating run.
+        Index(
+            "ix_job_run_last_rating",
+            text("finished_at desc"),
+            postgresql_where=text("type = 'rating' and status = 'success'"),
+        ),
+        {"schema": SCHEMA},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     type: str  # sync, sync_full, rating
@@ -207,6 +215,21 @@ class RatingChange(SQLModel, table=True):
     # Whether the table of `weight` lists the athlete from this contest on (see
     # ajr/rating/ranking.py); the other tables listing them are in rating_listing.
     listed_here: bool = True
+    # What the athlete's history shows beside the row, written by the rating job
+    # (ajr/rating/snapshot.py, HISTORY_FACTS) so the page reads this table alone: the
+    # contest's tournament, round (judobase counts down to the final, 0), number and
+    # round name, the opponent's rating before it (their row of the contest), their
+    # name and nation as they are now, and how the athlete ended the tournament.
+    competition_id: int | None = None
+    round: int | None = None
+    fight_no: int | None = None
+    round_name: str | None = None
+    opponent_rating_before: float | None = None
+    opponent_rd_before: float | None = None
+    opponent_family_name: str | None = None
+    opponent_given_name: str | None = None
+    opponent_country: str | None = None  # IOC
+    result: str | None = None  # ajr.athlete_competition's, for the contest's weight
 
 
 class RatingListing(SQLModel, table=True):
@@ -374,7 +397,16 @@ class AthleteSummary(SQLModel, table=True):
 
     __tablename__ = "athlete_summary"
     # A nation's athletes (the country page).
-    __table_args__ = (Index("ix_athlete_summary_country", "country"), {"schema": SCHEMA})
+    __table_args__ = (
+        Index("ix_athlete_summary_country", "country"),
+        # api.sitemap reads the athletes from the index alone.
+        Index(
+            "ix_athlete_summary_sitemap",
+            "athlete_id",
+            postgresql_include=["last_contest", "contests"],
+        ),
+        {"schema": SCHEMA},
+    )
 
     athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
     weight: str | None = None
@@ -395,3 +427,27 @@ class AthleteSummary(SQLModel, table=True):
     peak_score: int | None = None  # the best score at the end of a day of contests
     peak_on: date | None = None
     peak_weight: str | None = None
+    # what api.athlete shows, on the day of the run (ajr/rating/snapshot.py)
+    rating: int | None = None  # RD grown for the days without contests
+    rd: int | None = None
+    score_today: int | None = None  # `score` is the table's, None when hidden
+    score_change_90d: int | None = None
+    score_change_6m: int | None = None
+    places_up_90d: int | None = None  # in today's table (None outside it)
+    places_up_6m: int | None = None
+    peak_place: int | None = None  # in the table of peak_weight on peak_on
+    wrl_place: int | None = None
+
+
+class NationSummary(SQLModel, table=True):
+    """Every nation with a rated athlete, for the Explore list and the country page's
+    switcher (api.nations); rebuilt by the rating job."""
+
+    __tablename__ = "nation_summary"
+    __table_args__ = {"schema": SCHEMA}
+
+    country_id: int = Field(foreign_key=fk("country"), primary_key=True)
+    country: str  # IOC
+    name: str | None = None
+    athletes: int
+    active: int  # in a weight's table today

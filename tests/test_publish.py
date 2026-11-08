@@ -24,6 +24,7 @@ from ajr.publish import (
     published_tables,
     site_changed,
 )
+from ajr.rating.job import run_rating
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -88,6 +89,8 @@ def add_data() -> None:
 
 
 def rows(connection, table: str) -> list[tuple]:
+    # floats in full: the working copy's database sends fewer digits (conftest)
+    connection.execute("set extra_float_digits = 3")
     return connection.execute(f"select * from ajr.{table} order by 1, 2").fetchall()
 
 
@@ -294,3 +297,103 @@ def test_a_table_rewritten_for_the_most_part_is_compacted(connections, monkeypat
     assert compact(remote, [Change("contest", 0, 0, False)]) == []  # nothing sent
     assert database_size(remote) > 0
     assert_same(local, remote)
+
+
+def add_rated_data() -> None:
+    """add_data with weights, rated: rows in rating_change (and rating_listing)."""
+    add_data()
+    run("update ajr.contest set weight = '-73'")
+    run_rating()
+
+
+def test_a_whole_table_with_a_declared_order_is_built_and_swapped(connections):
+    local, remote = connections
+    add_rated_data()
+    index_names = """
+        select array_agg(indexname order by indexname) from pg_indexes
+        where schemaname = 'ajr' and tablename in ('rating_change', 'rating_listing')
+    """
+    constraint_names = """
+        select array_agg(conname order by conname) from pg_constraint
+        where conrelid in ('ajr.rating_change'::regclass, 'ajr.rating_listing'::regclass)
+    """
+
+    changes = {change.table: change for change in publish(local, remote)}
+
+    assert changes["rating_change"].swapped and changes["rating_change"].whole
+    assert changes["rating_listing"].swapped  # it refers to rating_change
+    assert not changes["contest"].swapped
+    assert_same(local, remote)
+    # stored in the declared order
+    assert remote.execute(
+        "select array_agg(athlete_id order by ctid)"
+        " = array_agg(athlete_id order by athlete_id, seq) from ajr.rating_change"
+    ).fetchone()[0]
+    # the same indexes and constraints, by name, all validated, the rows all-visible
+    assert remote.execute(index_names).fetchone() == local.execute(index_names).fetchone()
+    assert remote.execute(constraint_names).fetchone() == local.execute(constraint_names).fetchone()
+    assert remote.execute(
+        "select bool_and(convalidated) from pg_constraint"
+        " where conrelid = 'ajr.rating_change'::regclass"
+    ).fetchone()[0]
+    assert remote.execute(
+        "select confrelid = 'ajr.rating_change'::regclass from pg_constraint "
+        "where conrelid = 'ajr.rating_listing'::regclass and contype = 'f'"
+    ).fetchone()[0]
+    assert remote.execute(
+        "select relallvisible = relpages from pg_class where oid = 'ajr.rating_change'::regclass"
+    ).fetchone()[0]
+    assert remote.execute("select to_regclass('ajr.rating_change__new')").fetchone()[0] is None
+    # nothing changed: nothing sent
+    assert changed(publish(local, remote)) == {}
+
+
+def test_the_swapped_table_still_cascades(connections):
+    local, remote = connections
+    add_rated_data()
+    publish(local, remote)
+
+    remote.execute("delete from ajr.contest where id = 101")
+
+    assert remote.execute(
+        "select count(*) from ajr.rating_change where contest_id = 101"
+    ).fetchone()[0] == 0  # fmt: skip
+    remote.rollback()
+
+
+def test_a_swap_that_cannot_lock_leaves_production_as_it_was(
+    connections, production_url, monkeypatch
+):
+    local, remote = connections
+    add_rated_data()
+    publish(local, remote)
+    before = rows(remote, "rating_change")
+    remote.commit()
+    monkeypatch.setattr(ajr.publish, "SWAP_LOCK_TIMEOUT", "100ms")
+
+    with psycopg.connect(production_url) as reader:
+        reader.execute("select from ajr.rating_change limit 1")  # holds ACCESS SHARE
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            publish(local, remote, rebuild={"rating_change"})
+        remote.rollback()
+        local.rollback()
+
+    assert rows(remote, "rating_change") == before
+    assert remote.execute("select to_regclass('ajr.rating_change__new')").fetchone()[0] is None
+
+
+def test_a_rebuild_swaps_without_changes_and_compact_skips_it(connections, monkeypatch):
+    local, remote = connections
+    add_rated_data()
+    publish(local, remote)
+    monkeypatch.setattr(ajr.publish, "COMPACT_MIN_BYTES", 0)
+    monkeypatch.setattr(ajr.publish, "COMPACT_MIN_ROWS", 1)
+
+    changes = publish(local, remote, rebuild={"rating_change"})
+
+    swapped = [change.table for change in changes if change.swapped]
+    assert swapped == ["rating_change", "rating_listing"]
+    assert compact(remote, [c for c in changes if c.table in swapped]) == []
+    assert_same(local, remote)
+    with pytest.raises(ValueError):
+        publish(local, remote, rebuild={"athlete"})

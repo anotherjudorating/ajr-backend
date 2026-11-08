@@ -67,26 +67,29 @@ def run_rating(
     """python -m ajr.rating writes the outcome for the update workflow."""
     with Session(engine) as session:
         corrected = 0
+        rated_from = date.min  # the places on the days of the peaks: all again
         if needs_full_run(session, params, ranking):
             rate_everything(session, params, ranking)
             refresh_contest_list(session, None)
         elif full:
             corrected = rate_everything(session, params, ranking, compare=True)
             refresh_contest_list(session, None)
+            rated_from = date.min if corrected else date.max
         else:
             since = first_changed_competition_day(session)
             if since is None:
                 logger.info("No results changed since the last rating run")
                 # the rating is the same, but names, IJF places or the day may not be
                 before = site_visible_state(session)
-                refresh_snapshot(session)
+                refresh_snapshot(session, date.max)
                 check_rating(session)
                 session.commit()
                 return RatingRun(changed=site_visible_state(session) != before)
             rate_since(session, since, params, ranking)
             refresh_contest_list(session, since.year)
+            rated_from = since
         session.merge(settings(params, ranking))
-        refresh_snapshot(session)
+        refresh_snapshot(session, rated_from)
         check_rating(session)
         session.commit()
     logger.info("Rating saved")
@@ -136,6 +139,14 @@ ATHLETE_CHECK = text("""
 """)
 
 
+# Every row has its history facts (ajr/rating/snapshot.py, HISTORY_FACTS): a missing
+# opponent row or a skipped update would leave the athlete's page without them.
+FACTS_CHECK = text("""
+    select count(*) from ajr.rating_change
+    where competition_id is null or opponent_rating_before is null
+""")
+
+
 def check_rating(session: Session) -> None:
     """Every contest has two rows, every athlete one latest row and a history in time
     order, and the Explore summary has every rated athlete."""
@@ -151,6 +162,8 @@ def check_rating(session: Session) -> None:
         problems.append(
             f"athlete_summary has {athletes.summaries} rows for {athletes.athletes} rated athletes"
         )
+    if facts := session.execute(FACTS_CHECK).scalar_one():
+        problems.append(f"{facts} rating rows without their history facts")
     if problems:
         raise RatingCheckError("; ".join(problems))
 
