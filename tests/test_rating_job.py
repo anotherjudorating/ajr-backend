@@ -716,3 +716,19 @@ def test_tournament_and_nation_facts():
     assert (stats.name, stats.date_from) == ("Grand Slam", date(2026, 3, 1))
     assert nations == [("JPN", date(2026, 3, 1))]
     assert summary.top1 is not None and summary.top8 is not None
+
+
+def test_a_run_without_new_results_completes_a_list_a_migration_left_incomplete():
+    add_contests()
+    rate()
+    with Session(engine) as session:  # as after a migration adding the scores
+        session.execute(text_("update ajr.contest_list set white_score_before = null"))
+        session.commit()
+
+    rate()  # no result changed
+
+    with Session(engine) as session:
+        missing = session.execute(
+            text_("select count(*) from ajr.contest_list where white_score_before is null")
+        ).scalar()
+    assert missing == 0

@@ -34,7 +34,7 @@ from ajr.core.models import Competition, JobRun, RatingChange, RatingListing, Ra
 from ajr.rating.engine import MEN, WOMEN, ContestOutcome, RatingParams, load_contests, run
 from ajr.rating.glicko2 import Rating
 from ajr.rating.ranking import WEIGHTS, RankingParams, Tournament, listed_weights, recent
-from ajr.rating.snapshot import refresh_contest_list, refresh_snapshot
+from ajr.rating.snapshot import complete_contest_list, refresh_contest_list, refresh_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def run_rating(
                 logger.info("No results changed since the last rating run")
                 # the rating is the same, but names, IJF places or the day may not be
                 before = site_visible_state(session)
+                complete_contest_list(session)
                 refresh_snapshot(session, date.max)
                 check_rating(session)
                 session.commit()

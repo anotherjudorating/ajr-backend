@@ -251,13 +251,24 @@ CONTEST_LIST = text("""
 CONTEST_LIST_DELETE = text("""
     delete from ajr.contest_list where cast(:since as integer) is null or year >= :since
 """)
-IS_EMPTY = text("select not exists (select from ajr.contest_list)")
+# An empty list (a fresh database), or rows without what a migration added (scores),
+# is built whole.
+INCOMPLETE = text("""
+    select not exists (select from ajr.contest_list)
+        or exists (select from ajr.contest_list where real_fight and white_score_before is null)
+""")
+
+
+def complete_contest_list(session: Session) -> None:
+    """A run that rated nothing still completes a list a migration left incomplete."""
+    if session.execute(INCOMPLETE).scalar():
+        refresh_contest_list(session, None)
 
 
 def refresh_contest_list(session: Session, since: int | None) -> None:
     """Rebuild the contest list from the year `since` on (all with None): the rating
-    rows of those years are new. An empty list (a fresh database) is built whole."""
-    if since is not None and session.execute(IS_EMPTY).scalar():
+    rows of those years are new. An incomplete list is built whole."""
+    if since is not None and session.execute(INCOMPLETE).scalar():
         since = None
     session.execute(CONTEST_LIST_DELETE, {"since": since})
     rows = session.execute(CONTEST_LIST, {"since": since, "weights": WEIGHTS}).rowcount
