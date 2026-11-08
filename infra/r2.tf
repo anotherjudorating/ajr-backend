@@ -67,3 +67,13 @@ resource "github_actions_variable" "r2_bucket" {
   variable_name = "R2_BUCKET"
   value         = cloudflare_r2_bucket.data.name
 }
+
+# Terraform's own state for both roots (ajr-backend/infra and ajr-web/infra): it holds
+# secrets, so the bucket is private and read with its own R2 API token (Object Read &
+# Write on this bucket only), never the update job's.
+resource "cloudflare_r2_bucket" "terraform_state" {
+  account_id    = var.cloudflare_account_id
+  name          = "ajr-terraform-state"
+  location      = "WEUR"
+  storage_class = "Standard"
+}
