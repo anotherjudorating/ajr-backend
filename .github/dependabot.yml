@@ -16,3 +16,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: terraform
+    directory: /infra
+    schedule:
+      interval: weekly
