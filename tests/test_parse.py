@@ -54,5 +54,5 @@ def test_athletes_from_contest():
 def test_wrl_entry_gets_the_weight_name():
     entry = parse.wrl_entry(ranking_entry(13208, weight_id=2, place=1, points=5200))
 
-    assert (entry.athlete_id, entry.weight, entry.place, entry.points) == (13208, "-66", 1, 5200)
+    assert (entry.athlete_id, entry.weight, entry.place) == (13208, "-66", 1)
     assert parse.wrl_entry(ranking_entry(1, weight_id=14, place=1, points=1)).weight == "+78"

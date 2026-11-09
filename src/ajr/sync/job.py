@@ -1,7 +1,7 @@
 """Copy judobase into our database.
 
 Order of work:
-1. Olympic cycles (from a local file), countries and competitions are saved every run,
+1. Countries and competitions are saved every run,
    and the athletes' second ids (from a local file, see save_aliases).
 2. Contests are fetched only for competitions that need it:
    - competitions happening now or in the next two weeks (draws and live results),
@@ -18,7 +18,6 @@ the same result, and a crashed run simply continues where it stopped.
 
 import asyncio
 import csv
-import json
 import logging
 from collections.abc import Collection
 from datetime import date, timedelta
@@ -36,7 +35,6 @@ from ajr.core.models import (
     Competition,
     Contest,
     ContestWalkover,
-    OlympicCycle,
     WrlRanking,
 )
 from ajr.sync import parse
@@ -45,7 +43,6 @@ from ajr.sync.walkovers import walkovers
 
 logger = logging.getLogger(__name__)
 
-OLYMPIC_GAMES_FILE = Path(__file__).parent / "data" / "olympic_games.json"
 ALIASES_FILE = Path(__file__).parent / "data" / "athlete_aliases.csv"
 DRAW_LOOKAHEAD = timedelta(days=14)
 LIVE_GRACE = timedelta(days=2)  # results keep arriving for a couple of days
@@ -60,7 +57,6 @@ async def run_sync(full: bool = False) -> list[Competition]:
     unannounced: list[Competition] = []
     async with JudobaseClient() as client:
         with Session(engine) as session:
-            save_olympic_cycles(session)
             country_ids = save_countries(session, await client.countries())
             save_competitions(session, await client.competitions(), country_ids)
             aliases = save_aliases(session)
@@ -101,34 +97,6 @@ async def run_sync(full: bool = False) -> list[Competition]:
 # --- reference data ----------------------------------------------------------
 
 
-def olympic_cycles() -> list[OlympicCycle]:
-    """A cycle runs from the day after one Games to the last day of the next ones."""
-    games = json.loads(OLYMPIC_GAMES_FILE.read_text())
-    games.sort(key=lambda g: g["end"])
-    cycles = []
-    previous_end = None
-    for number, game in enumerate(games, start=1):
-        end = date.fromisoformat(game["end"])
-        if previous_end is None:
-            start = date.fromisoformat(game["start"])
-        else:
-            start = previous_end + timedelta(days=1)
-        cycles.append(
-            OlympicCycle(
-                id=number,
-                name=f"{game['city']} {game['year']}",
-                date_from=start,
-                date_to=end,
-            )
-        )
-        previous_end = end
-    return cycles
-
-
-def save_olympic_cycles(session: Session) -> None:
-    upsert(session, olympic_cycles())
-
-
 def save_countries(session: Session, items: list[judobase.CountryShort]) -> set[int]:
     countries = [parse.country(item) for item in items]
     upsert(session, countries)
@@ -138,11 +106,9 @@ def save_countries(session: Session, items: list[judobase.CountryShort]) -> set[
 def save_competitions(
     session: Session, items: list[judobase.Competition], country_ids: set[int]
 ) -> None:
-    cycles = olympic_cycles()
     competitions = []
     for item in items:
         competition = parse.competition(item)
-        competition.olympic_cycle_id = find_cycle(cycles, competition.date_from)
         if competition.country_id not in country_ids:
             competition.country_id = None
         competitions.append(competition)
@@ -192,15 +158,6 @@ def save_aliases(session: Session) -> dict[int, int]:
         )
         logger.info("Athlete aliases: contests of %d competitions moved to main ids", len(changed))
     return aliases
-
-
-def find_cycle(cycles: list[OlympicCycle], day: date | None) -> int | None:
-    if day is None:
-        return None
-    for cycle in cycles:
-        if cycle.date_from <= day <= cycle.date_to:
-            return cycle.id
-    return None
 
 
 # --- choosing what to sync ----------------------------------------------------
@@ -438,11 +395,8 @@ async def save_world_ranking(
         return
 
     with Session(engine) as session:
-        saved = {
-            (e.athlete_id, e.weight): (e.place, e.points)
-            for e in session.scalars(select(WrlRanking))
-        }
-        new = {(e.athlete_id, e.weight): (e.place, e.points) for e in entries}
+        saved = {(e.athlete_id, e.weight): e.place for e in session.scalars(select(WrlRanking))}
+        new = {(e.athlete_id, e.weight): e.place for e in entries}
         if saved == new:
             return
         session.execute(delete(WrlRanking))

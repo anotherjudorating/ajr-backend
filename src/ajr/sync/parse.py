@@ -129,5 +129,4 @@ def wrl_entry(item: judobase.RankingEntry) -> WrlRanking:
         athlete_id=item.id_person,
         weight=WEIGHT_NAMES[item.id_weight],
         place=item.place,
-        points=item.sum_points,
     )
