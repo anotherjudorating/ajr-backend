@@ -11,10 +11,12 @@ Layout of the bucket:
     v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json   (Mondays)
     v/<version>/p4p/<men|women>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     v/<version>/teams/<men|women|mixed>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
-    archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz
+    archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz, README.md
 
 <version> is a hash of the rating settings: a new formula is written under a new
-prefix, then the manifest switches to it and the old prefix goes an hour later. The
+prefix, then the manifest switches to it and the old tables go an hour later; the old
+archive stays 90 days (the manifest's `old_archives`), so a link in someone's analysis
+keeps working for a while after the formula changes. The
 files are cached for a year at the edge, so a day computed again in the same version
 (results corrected back in time) gets a new name: the manifest's `generations` say
 from which day on which generation holds (`.g<n>`, none for 0). Each file holds
@@ -52,6 +54,10 @@ OLD_VERSION_GRACE = timedelta(hours=1)  # the site caches the manifest ~10 minut
 IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_CACHE = "public, max-age=300, must-revalidate"
 ARCHIVE_CACHE = "public, max-age=3600"
+ARCHIVE_KEEP = timedelta(days=90)  # an old version's archive, after a new formula
+LICENSE = "https://creativecommons.org/licenses/by/4.0/"  # CC BY 4.0, the archive's
+CONTACT = "data@anotherjudorating.com"
+SITE = "https://www.anotherjudorating.com"
 
 
 def slug(weight: str) -> str:
@@ -238,7 +244,8 @@ ARCHIVE = {
     "rating_history.csv.gz": """
         select rc.contest_id, rc.athlete_id, rc.opponent_id, rc.fought_on, rc.weight,
                rc.won, rc.win_probability, rc.rating_before, rc.rd_before,
-               rc.rating_after, rc.rd_after, rc.competition_id, rc.round_name
+               rc.volatility_before, rc.rating_after, rc.rd_after, rc.volatility_after,
+               rc.competition_id, rc.round_name
         from ajr.rating_change rc
         order by rc.fought_on, rc.seq, rc.athlete_id
     """,
@@ -255,6 +262,90 @@ ARCHIVE = {
         order by st.date_from, st.competition_id
     """,
 }
+
+
+# What each column of the archive means, for its README (a test checks that every
+# column of ARCHIVE has a line here).
+COLUMNS = {
+    "rating_history.csv.gz": {
+        "contest_id": "the contest's judobase id",
+        "athlete_id": "the athlete's judobase id (athletes.csv.gz); two rows per contest, one each",
+        "opponent_id": "the opponent's judobase id",
+        "fought_on": "the day of the contest (YYYY-MM-DD)",
+        "weight": "the weight category, e.g. -73 or +78",
+        "won": "whether the athlete won (true/false)",
+        "win_probability": "the athlete's chance to win before the contest, by the rating (0 to 1)",
+        "rating_before": "the athlete's Glicko-2 rating before the contest",
+        "rd_before": "the rating deviation before the contest (how unsure the rating is)",
+        "volatility_before": "the Glicko-2 volatility before the contest",
+        "rating_after": "the rating after the contest",
+        "rd_after": "the rating deviation after the contest",
+        "volatility_after": "the volatility after the contest",
+        "competition_id": "the tournament's judobase id (competitions.csv.gz)",
+        "round_name": "the round, as judobase names it (e.g. Final, Semi-Final, Round of 32)",
+    },
+    "athletes.csv.gz": {
+        "id": "the athlete's judobase id",
+        "family_name": "family name, as in judobase",
+        "given_name": "given name, as in judobase",
+        "gender": "male or female",
+        "dob_year": "year of birth, when judobase has it",
+        "country": "IOC code of the country the athlete last fought for",
+    },
+    "competitions.csv.gz": {
+        "id": "the tournament's judobase id",
+        "name": "the tournament's name",
+        "rank_name": "its level: Grand Slam, Grand Prix, World Championships, Continental Open…",
+        "city": "host city",
+        "country": "IOC code of the host country",
+        "date_from": "first day",
+        "date_to": "last day",
+        "contests": "contests of the tournament in the rating",
+    },
+}
+
+
+def readme(current: str, settings: dict, files: dict[str, dict], now: datetime) -> str:
+    """The archive's README: what the files are, their columns, the formula's settings,
+    the license and where the results come from."""
+    lines = [
+        "# Another Judo Rating: rating history",
+        "",
+        "Every senior individual IJF contest since 2009 with the Glicko-2 rating of both",
+        f"athletes before and after it, as computed by Another Judo Rating ({SITE}).",
+        "",
+        f"- Version: `{current}` (a hash of the rating settings below: a new formula, a new one)",
+        f"- Updated: {now.date().isoformat()} (weekly, after Monday)",
+        f"- About the files: {SITE}/data",
+        f"- License: CC BY 4.0 ({LICENSE})",
+        f"- Contact, questions and removal requests: {CONTACT}",
+        "",
+        "## Files",
+        "",
+        "| File | Rows | Bytes | sha256 |",
+        "|---|---|---|---|",
+    ]
+    for name, meta in files.items():
+        lines.append(f"| {name} | {meta['rows']} | {meta['bytes']} | `{meta['sha256']}` |")
+    for name, columns in COLUMNS.items():
+        lines += ["", f"## {name}", "", "| Column | Meaning |", "|---|---|"]
+        lines += [f"| {column} | {meaning} |" for column, meaning in columns.items()]
+    lines += ["", "## Rating settings of this version", "", "| Setting | Value |", "|---|---|"]
+    lines += [f"| {k} | {v} |" for k, v in settings.items()]
+    lines += [
+        "",
+        "## Source and license",
+        "",
+        "Derived from results published in IJF judobase (judobase.ijf.org). Another Judo",
+        "Rating is not affiliated with or endorsed by the International Judo Federation.",
+        "The IJF retains all rights in its own data; this archive republishes only the",
+        "identifiers and outcomes needed to reproduce the rating. CC BY 4.0 covers the",
+        "rating and the other columns computed by Another Judo Rating.",
+        "",
+        f"Cite as: Another Judo Rating, rating history, version {current}, {SITE}/data",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def archive_files(connection: Connection) -> dict[str, tuple[bytes, int]]:
@@ -325,7 +416,19 @@ def publish(
                 "bytes": len(body), "rows": rows,
                 "sha256": hashlib.sha256(body).hexdigest(), "updated_at": now.isoformat(),
             }  # fmt: skip
+        text = readme(current, settings, archive, now).encode()
+        bucket.put(f"archive/{current}/README.md", text, "text/markdown; charset=utf-8",
+                   ARCHIVE_CACHE, gzipped=False)  # fmt: skip
     bucket.wait()
+
+    # The old version's archive stays ARCHIVE_KEEP after a new formula, then goes.
+    old_archives = list((manifest or {}).get("old_archives", []))
+    if manifest and manifest["version"] != current and manifest.get("archive"):
+        old_archives.append({"version": manifest["version"], "switched_out_at": now.isoformat(),
+                             "archive": manifest["archive"]})  # fmt: skip
+    expired = [a["version"] for a in old_archives
+               if datetime.fromisoformat(a["switched_out_at"]) < now - ARCHIVE_KEEP]  # fmt: skip
+    old_archives = [a for a in old_archives if a["version"] not in expired]
 
     previous = [p for p in (manifest or {}).get("previous", []) if p["version"] not in plan.delete]
     if manifest and manifest["version"] != current:
@@ -345,20 +448,28 @@ def publish(
         "settings": settings,
         "tables": {"rankings": [slug(w) for w in WEIGHTS], "p4p": GENDERS, "teams": TEAM_KINDS},
         "archive": archive,
+        "readme": f"archive/{current}/README.md" if archive else None,
+        "license": LICENSE,
+        "old_archives": old_archives,
         "previous": previous,
     }
     if dry_run:
         connection.rollback()
         return Result(plan, bucket.uploaded, bucket.bytes, 0)
-    if plan.days or plan.full or new_manifest["previous"] != (manifest or {}).get("previous"):
+    if (
+        plan.days
+        or plan.full
+        or new_manifest["previous"] != (manifest or {}).get("previous")
+        or new_manifest["old_archives"] != (manifest or {}).get("old_archives")
+    ):
         bucket.s3.put_object(
             Bucket=bucket.name, Key="manifest.json",
             Body=json.dumps(new_manifest, default=str, indent=1).encode(),
             ContentType="application/json", CacheControl=MANIFEST_CACHE,
         )  # fmt: skip
 
-    deleted = sum(bucket.delete_prefix(f"v/{v}/") + bucket.delete_prefix(f"archive/{v}/")
-                  for v in plan.delete)  # fmt: skip
+    deleted = sum(bucket.delete_prefix(f"v/{v}/") for v in plan.delete)
+    deleted += sum(bucket.delete_prefix(f"archive/{v}/") for v in expired)
     connection.execute(
         "insert into ajr.tables_export (id, version, last_day) values (1, %s, %s)"
         " on conflict (id) do update set pending_from = null, version = excluded.version,"
