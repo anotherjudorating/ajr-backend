@@ -126,6 +126,11 @@ def test_hidden_athlete_has_no_place():
 
 def test_athlete_history_latest_first():
     add_data()
+    with Session(engine) as session:
+        session.execute(
+            update(Competition).where(Competition.id == 10).values(rank_name="Grand Slam")
+        )
+        session.commit()
 
     rows = call("select * from api.athlete_history(1)")
 
@@ -133,6 +138,7 @@ def test_athlete_history_latest_first():
     final = rows[0]
     assert (final["opponent_id"], final["opponent_family_name"], final["won"]) == (3, "NAME3", True)
     assert final["competition"] == "Grand Slam"
+    assert final["competition_rank"] == "Grand Slam"  # the level, for the medal table
     assert final["rating_after"] > final["rating_before"]
 
 
