@@ -5,9 +5,12 @@ name: Load test
 # Postgres limited like the Supabase Nano instance; first with main, then with the
 # pull request on the same copy. The summary shows both side by side. The job fails
 # only on failed calls of the pull request (timeouts, server errors); times and
-# pages read are for information.
+# pages read are for information. Half an hour and two full ratings: only for pull
+# requests that touch the database's functions, on the label "loadtest" (added when
+# the pull request is opened or later; each push to a labeled one runs it again).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -15,6 +18,7 @@ permissions:
 
 jobs:
   loadtest:
+    if: contains(github.event.pull_request.labels.*.name, 'loadtest')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
