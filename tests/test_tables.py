@@ -145,3 +145,44 @@ def test_a_rating_rewritten_back_in_time_marks_the_tables_stale():
 
     with engine.connect() as c:
         assert c.execute(text("select pending_from from ajr.tables_export")).scalar() is not None
+
+
+def test_every_archive_column_is_described_and_the_readme_goes_up(monkeypatch):
+    add_data()
+    run_rating()
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=7))
+    bucket = MemoryBucket()
+
+    with connection() as c:
+        for name, query in tables.ARCHIVE.items():
+            columns = [col.name for col in c.execute(query + " limit 0").description]
+            assert columns == list(tables.COLUMNS[name]), name
+        tables.publish(c, bucket, today=TODAY)
+
+    manifest = json.loads(bucket.objects["manifest.json"])
+    assert manifest["license"] == tables.LICENSE
+    text = bucket.objects[manifest["readme"]].decode()
+    assert "volatility_before" in text and "CC BY 4.0" in text and tables.CONTACT in text
+    assert manifest["archive"]["rating_history.csv.gz"]["sha256"] in text
+
+
+def test_an_old_formulas_archive_stays_90_days(monkeypatch):
+    add_data()
+    run_rating()
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=7))
+    old = {"rating_history.csv.gz": {"bytes": 1, "rows": 1, "sha256": "x", "updated_at": "-"}}
+    bucket = MemoryBucket(
+        {"version": "old", "last_day": "2026-11-02", "archive": old, "previous": [],
+         "old_archives": [{"version": "older", "archive": old,
+                           "switched_out_at": (NOW - timedelta(days=91)).isoformat()}]}
+    )  # fmt: skip
+    bucket.objects["archive/old/rating_history.csv.gz"] = b"old"
+    bucket.objects["archive/older/rating_history.csv.gz"] = b"older"
+
+    with connection() as c:
+        tables.publish(c, bucket, today=TODAY)
+
+    manifest = json.loads(bucket.objects["manifest.json"])
+    assert [a["version"] for a in manifest["old_archives"]] == ["old"]
+    assert "archive/old/rating_history.csv.gz" in bucket.objects
+    assert "archive/older/rating_history.csv.gz" not in bucket.objects
