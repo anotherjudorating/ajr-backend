@@ -54,7 +54,7 @@ async def main(args: argparse.Namespace) -> int:
     for load in loads:
         print(
             f"{load.clients:>3} clients: p50 {load.p50} ms, p95 {load.p95} ms, p99 {load.p99} ms, "
-            f"{len(load.failures)} failed of {load.calls}",
+            f"{len(load.failures)} failed of {load.calls} in {load.seconds} s",
             file=sys.stderr,
         )
     for failure in failures:

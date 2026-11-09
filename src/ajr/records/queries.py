@@ -11,8 +11,6 @@ TOP = 500  # rows kept per record
 # The IJF World Tour (and the Olympics): where medals count.
 WORLD_TOUR = "('Grand Slam', 'Grand Prix', 'Masters', 'World Championships', 'Olympic Games')"
 MEDALS = "('gold', 'silver', 'bronze')"
-# A score of an athlete whose rating is still a guess (a few contests) is not a record.
-SETTLED_RD = 100
 # The data starts in 2009 and the ratings need about two years to settle (in 2009-10
 # the favourite won 57-67% of contests and RDs were high, from 2011 on 68-71%), so
 # the records that rest on ratings count from 2011; counts (medals, streaks,

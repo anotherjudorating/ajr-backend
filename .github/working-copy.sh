@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The update job's working copy of production, in the Postgres container "db"
-# (.github/workflows/update-copy.yml), kept between runs as one dump in $COPY.
+# (.github/workflows/update.yml), kept between runs as one dump in $COPY.
 #
 #   restore <cache key>  the previous run's copy; without one (no cache key), a new
 #                        copy: our migrations, then production's data (once in a
