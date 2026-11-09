@@ -316,7 +316,7 @@ def readme(current: str, settings: dict, files: dict[str, dict], now: datetime) 
         "",
         f"- Version: `{current}` (a hash of the rating settings below: a new formula, a new one)",
         f"- Updated: {now.date().isoformat()} (weekly, after Monday)",
-        f"- How the rating works: {SITE}/methodology",
+        f"- About the files: {SITE}/data",
         f"- License: CC BY 4.0 ({LICENSE})",
         f"- Contact, questions and removal requests: {CONTACT}",
         "",
