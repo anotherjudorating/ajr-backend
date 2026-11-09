@@ -153,7 +153,7 @@ def test_site_role_cannot_read_our_tables():
 def test_wrl_place_today_only():
     add_data()
     with Session(engine) as session:
-        session.add(WrlRanking(athlete_id=1, weight="-73", place=4, points=3000))
+        session.add(WrlRanking(athlete_id=1, weight="-73", place=4))
         session.commit()
     refresh()
 

@@ -23,7 +23,6 @@ from ajr.core.models import (
     Contest,
     Country,
     JobRun,
-    OlympicCycle,
     WrlRanking,
 )
 from ajr.sync import job
@@ -69,10 +68,8 @@ def test_first_sync_saves_everything(judobase):
     sync()
 
     assert stored(Country)[1].ioc == "JPN"
-    assert len(stored(OlympicCycle)) == 22
     saved = stored(Competition)[1]
     assert saved.date_from == PAST
-    assert saved.olympic_cycle_id is not None
     assert saved.contests_synced_for == utc(UPDATED)
     assert set(stored(Contest)) == {11, 12}
     athletes = stored(Athlete)
@@ -356,11 +353,9 @@ def test_draw_without_results_does_not_mark(judobase):
 # --- world ranking list -------------------------------------------------------
 
 
-def wrl() -> dict[tuple[int, str], tuple[int, int]]:
+def wrl() -> dict[tuple[int, str], int]:
     with Session(engine) as session:
-        return {
-            (e.athlete_id, e.weight): (e.place, e.points) for e in session.exec(select(WrlRanking))
-        }
+        return {(e.athlete_id, e.weight): e.place for e in session.exec(select(WrlRanking))}
 
 
 def test_world_ranking_of_known_athletes(judobase):
@@ -374,7 +369,7 @@ def test_world_ranking_of_known_athletes(judobase):
 
     sync()
 
-    assert wrl() == {(100, "-73"): (1, 5000), (200, "-73"): (2, 4000), (200, "-81"): (9, 900)}
+    assert wrl() == {(100, "-73"): 1, (200, "-73"): 2, (200, "-81"): 9}
 
 
 def test_new_world_ranking_replaces_the_old_one(judobase):
@@ -385,7 +380,7 @@ def test_new_world_ranking_replaces_the_old_one(judobase):
     judobase.ranking = [ranking_entry(200, 3, 1, 5100)]
     sync()
 
-    assert wrl() == {(200, "-73"): (1, 5100)}
+    assert wrl() == {(200, "-73"): 1}
 
 
 @pytest.mark.parametrize("problem", ["error", "empty"])
@@ -400,7 +395,7 @@ def test_world_ranking_problem_keeps_ours(judobase, problem):
         judobase.ranking = []
     sync()
 
-    assert wrl() == {(100, "-73"): (1, 5000)}
+    assert wrl() == {(100, "-73"): 1}
 
 
 def test_unchanged_world_ranking_is_not_rewritten(judobase, caplog):
@@ -412,7 +407,7 @@ def test_unchanged_world_ranking_is_not_rewritten(judobase, caplog):
         sync()
 
     assert "World ranking" not in caplog.text
-    assert wrl() == {(100, "-73"): (1, 5000)}
+    assert wrl() == {(100, "-73"): 1}
 
 
 # --- athletes' second ids -------------------------------------------------------
@@ -480,7 +475,7 @@ def test_the_world_ranking_lists_the_main_id(judobase, aliases):
 
     sync()
 
-    assert wrl() == {(100, "-73"): (4, 2000)}
+    assert wrl() == {(100, "-73"): 4}
 
 
 def test_the_aliases_file_names_each_second_id_once_and_never_a_chain():

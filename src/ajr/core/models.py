@@ -50,16 +50,6 @@ class AthleteAlias(SQLModel, table=True):
     athlete_id: int = Field(foreign_key=fk("athlete"))  # the id fought under last
 
 
-class OlympicCycle(SQLModel, table=True):
-    __tablename__ = "olympic_cycle"
-    __table_args__ = {"schema": SCHEMA}
-
-    id: int = Field(**EXTERNAL_ID)
-    name: str
-    date_from: date
-    date_to: date
-
-
 class Competition(SQLModel, table=True):
     __table_args__ = {"schema": SCHEMA}
 
@@ -78,7 +68,6 @@ class Competition(SQLModel, table=True):
     # individual, team, age_group, kata, para, camp or military (ajr/sync/kinds.py)
     kind: str = Field(default="individual", sa_type=Text)
     country_id: int | None = Field(default=None, foreign_key=fk("country"))
-    olympic_cycle_id: int | None = Field(default=None, foreign_key=fk("olympic_cycle"), index=True)
     # judobase `updated_at_ts`, and its value when the contests were last synced.
     updated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     contests_synced_for: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
@@ -296,7 +285,6 @@ class WrlRanking(SQLModel, table=True):
     athlete_id: int = Field(foreign_key=fk("athlete"), primary_key=True)
     weight: str = Field(primary_key=True)
     place: int
-    points: int
 
 
 class Record(SQLModel, table=True):

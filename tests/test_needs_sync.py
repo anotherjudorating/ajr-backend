@@ -1,11 +1,11 @@
-"""Which competitions get their contests fetched, and the Olympic cycles."""
+"""Which competitions get their contests fetched."""
 
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from ajr.core.models import Competition
-from ajr.sync.job import find_cycle, needs_sync, olympic_cycles
+from ajr.sync.job import needs_sync
 
 TODAY = date(2026, 10, 28)
 UPDATED = datetime(2026, 1, 1, tzinfo=UTC)
@@ -76,14 +76,3 @@ def test_competition_without_date_is_skipped():
     competition = make(0)
     competition.date_from = None
     assert not needs_sync(competition, TODAY, full=True)
-
-
-def test_olympic_cycles_follow_each_other():
-    cycles = olympic_cycles()
-
-    for previous, current in zip(cycles, cycles[1:], strict=False):
-        assert current.date_from == previous.date_to + timedelta(days=1)
-    assert find_cycle(cycles, date(2024, 8, 11)) == find_cycle(cycles, date(2021, 8, 9))
-    assert find_cycle(cycles, date(2024, 8, 12)) != find_cycle(cycles, date(2024, 8, 11))
-    assert find_cycle(cycles, None) is None
-    assert find_cycle(cycles, date(1900, 1, 1)) is None  # before the first Games
