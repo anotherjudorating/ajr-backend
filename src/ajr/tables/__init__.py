@@ -11,8 +11,8 @@ Layout of the bucket:
     v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json   (Mondays)
     v/<version>/p4p/<men|women>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     v/<version>/teams/<men|women|mixed>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
-    v/<version>/places/<athlete_id>.json                  an athlete's place every week
-    v/<version>/places-state.json                         every athlete's, for the next run
+    places/<version>/<athlete_id>.json                    an athlete's place every week
+    places/<version>/state.json                           every athlete's, for the next run
     archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz, README.md
 
 <version> is a hash of the rating settings: a new formula is written under a new
@@ -26,9 +26,9 @@ exactly what api.leaderboard / api.p4p / api.teams answer for that day.
 
 An athlete's places (in their weight's table and pound for pound, every Monday) are
 one small file per athlete, for the site's rating chart: the weeks the run computes
-replace the ones they cover in the state of the last run (places-state.json), and only
-the files that changed are uploaded. They change every week, so the site asks for them
-with the manifest's last day in the query (?w=…): a new week, a new address.
+replace the ones they cover in the state of the last run (state.json), and only the
+files that changed are uploaded. They change every week, so they are not under v/ (a
+year at the edge): places/ is cached an hour (ajr-web/infra/cloudflare.tf).
 
 The update job runs `python -m ajr.tables publish` after the publish to production:
 the rating job marks from which day the tables are stale (ajr.tables_export.pending_from),
@@ -62,7 +62,7 @@ OLD_VERSION_GRACE = timedelta(hours=1)  # the site caches the manifest ~10 minut
 IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_CACHE = "public, max-age=300, must-revalidate"
 ARCHIVE_CACHE = "public, max-age=3600"
-PLACES_CACHE = "public, max-age=31536000"  # asked for with ?w=<last day>: see above
+PLACES_CACHE = "public, max-age=3600"  # they change every week: see above
 ARCHIVE_KEEP = timedelta(days=90)  # an old version's archive, after a new formula
 LICENSE = "https://creativecommons.org/licenses/by/4.0/"  # CC BY 4.0, the archive's
 CONTACT = "data@anotherjudorating.com"
@@ -178,11 +178,11 @@ def day_tables(connection: Connection, day: date) -> list[tuple[str, str, list[d
 
 
 def place_key(version: str, athlete_id: int | str) -> str:
-    return f"v/{version}/places/{athlete_id}.json"
+    return f"places/{version}/{athlete_id}.json"
 
 
 def places_state_key(version: str) -> str:
-    return f"v/{version}/places-state.json"
+    return f"places/{version}/state.json"
 
 
 # A week of an athlete, packed into one number for the state: the place in the weight's
@@ -502,7 +502,9 @@ def publish(
             old = json.loads(gzip.decompress(body)) if body else {}
         start = (plan.days[0] - FIRST_DAY).days // 7
         if not old and not plan.full and start > 0:
-            # no state yet (the first run with places): the weeks before, places only
+            # no state yet (the first run with places): the weeks before, places only;
+            # the files of the first layout (under v/, a year at the edge) go
+            bucket.delete_prefix(f"v/{current}/places")
             before = days_between(FIRST_DAY, plan.days[0] - timedelta(days=1))
             weeks = [week_places(day_tables(connection, day)) for day in before] + weeks
             start = 0
@@ -580,6 +582,7 @@ def publish(
         )  # fmt: skip
 
     deleted = sum(bucket.delete_prefix(f"v/{v}/") for v in plan.delete)
+    deleted += sum(bucket.delete_prefix(f"places/{v}/") for v in plan.delete)
     deleted += sum(bucket.delete_prefix(f"archive/{v}/") for v in expired)
     connection.execute(
         "insert into ajr.tables_export (id, version, last_day) values (1, %s, %s)"
