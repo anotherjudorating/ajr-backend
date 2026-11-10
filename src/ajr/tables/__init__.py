@@ -11,8 +11,10 @@ Layout of the bucket:
     v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json   (Mondays)
     v/<version>/p4p/<men|women>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     v/<version>/teams/<men|women|mixed>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
-    places/<version>/<athlete_id>.json                    an athlete's place every week
+    places/<version>/athletes/<athlete_id>.json           an athlete's place every week
     places/<version>/state.json                           every athlete's, for the next run
+    places/<version>/nations/<IOC>.json                   a nation's place and rating every week
+    places/<version>/nations-state.json                   their hashes, for the next run
     archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz, README.md
 
 <version> is a hash of the rating settings: a new formula is written under a new
@@ -29,6 +31,11 @@ one small file per athlete, for the site's rating chart: the weeks the run compu
 replace the ones they cover in the state of the last run (state.json), and only the
 files that changed are uploaded. They change every week, so they are not under v/ (a
 year at the edge): places/ is cached an hour (ajr-web/infra/cloudflare.tf).
+
+A nation's weeks (the mixed nations ranking, for the country page's chart) are the
+records job's ajr.nation_history, which only the working copy keeps (ajr/publish): a
+file per nation, uploaded when it changed (the nightly records), none while the table
+is empty (a working copy just restored from production, before the records).
 
 The update job runs `python -m ajr.tables publish` after the publish to production:
 the rating job marks from which day the tables are stale (ajr.tables_export.pending_from),
@@ -178,7 +185,15 @@ def day_tables(connection: Connection, day: date) -> list[tuple[str, str, list[d
 
 
 def place_key(version: str, athlete_id: int | str) -> str:
-    return f"places/{version}/{athlete_id}.json"
+    return f"places/{version}/athletes/{athlete_id}.json"
+
+
+def nation_key(version: str, ioc: str) -> str:
+    return f"places/{version}/nations/{ioc}.json"
+
+
+def nations_state_key(version: str) -> str:
+    return f"places/{version}/nations-state.json"
 
 
 def places_state_key(version: str) -> str:
@@ -242,6 +257,24 @@ def place_document(entry: list[int]) -> dict:
     first, *codes = entry
     return {"format": FORMAT, "from": (FIRST_DAY + timedelta(weeks=first)).isoformat(),
             "weeks": [unpack(c) for c in codes]}  # fmt: skip
+
+
+NATION_WEEKS = """
+    select co.ioc, h.day, h.place, h.rating
+    from ajr.nation_history h
+    join ajr.country co on co.id = h.country_id
+    order by co.ioc, h.day
+"""
+
+
+def nation_documents(connection: Connection) -> dict[str, dict]:
+    """Every nation's file: a week a row (the Sunday, the place, the rating)."""
+    out: dict[str, dict] = {}
+    for ioc, day, place, rating in connection.execute(NATION_WEEKS):
+        out.setdefault(ioc, {"format": FORMAT, "weeks": []})["weeks"].append(
+            [day.isoformat(), place, rating]
+        )
+    return out
 
 
 def encode(document: dict) -> bytes:
@@ -519,6 +552,24 @@ def publish(
             if len(bucket.pending) > 2000:
                 bucket.wait()
         bucket.put(places_state_key(current), encode(places), "application/json", "no-store",
+                   gzipped=True)  # fmt: skip
+
+    # the nations' weeks: the files whose content changed since the last run (the
+    # nightly records); their hashes are the state
+    nations = nation_documents(connection) if plan.days or plan.full else {}
+    if nations:
+        old_hashes: dict = {}
+        if not plan.full:
+            body = bucket.get(nations_state_key(current))
+            old_hashes = json.loads(gzip.decompress(body)) if body else {}
+        hashes = {}
+        for ioc, document in nations.items():
+            body = encode(document)
+            hashes[ioc] = hashlib.sha256(body).hexdigest()
+            if old_hashes.get(ioc) != hashes[ioc]:
+                bucket.put(nation_key(current, ioc), body, "application/json", PLACES_CACHE,
+                           gzipped=True)  # fmt: skip
+        bucket.put(nations_state_key(current), encode(hashes), "application/json", "no-store",
                    gzipped=True)  # fmt: skip
 
     archive = dict((manifest or {}).get("archive", {})) if not plan.full else {}

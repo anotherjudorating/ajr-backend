@@ -223,8 +223,36 @@ def test_publish_writes_every_athletes_places_and_a_week_later_only_whats_new(mo
     state = json.loads(gzip.decompress(bucket.objects[tables.places_state_key(version)]))
     athlete_id = str(listed[0][0])
     assert len(state[athlete_id]) - 1 == len(mondays) + 1  # every week, the new one too
-    changed = [k for k in bucket.objects if "/places/" in k and before.get(k) != bucket.objects[k]]
-    assert set(changed) <= {tables.place_key(version, a) for a in state}
+    changed = [
+        k for k in bucket.objects if k.startswith("places/") and before.get(k) != bucket.objects[k]
+    ]
+    assert set(changed) <= {tables.place_key(version, a) for a in state} | {
+        tables.places_state_key(version), tables.nations_state_key(version)}  # fmt: skip
+
+
+def test_publish_writes_the_nations_weeks_and_again_only_the_changed(monkeypatch):
+    add_data()
+    run_rating()
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
+    with engine.begin() as c:
+        c.execute(text("insert into ajr.nation_history select date '2026-11-01', id, 1, 1700"
+                       " from ajr.country where ioc = 'JPN'"))  # fmt: skip
+    bucket = MemoryBucket()
+
+    with connection() as c:
+        tables.publish(c, bucket, today=TODAY)
+
+    version = json.loads(bucket.objects["manifest.json"])["version"]
+    document = json.loads(gzip.decompress(bucket.objects[tables.nation_key(version, "JPN")]))
+    assert document["weeks"] == [["2026-11-01", 1, 1700]]
+
+    # a week later, the same weeks: not uploaded again (gone from the memory: not put back)
+    with engine.begin() as c:
+        c.execute(text("update ajr.tables_export set pending_from = null"))
+    del bucket.objects[tables.nation_key(version, "JPN")]
+    with connection() as c:
+        tables.publish(c, bucket, today=TODAY + timedelta(days=7))
+    assert tables.nation_key(version, "JPN") not in bucket.objects
 
 
 def test_merge_places_replaces_the_weeks_from_start_and_trims_absent_ones():
