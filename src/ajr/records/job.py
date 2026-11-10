@@ -1,5 +1,4 @@
-"""Recompute ajr.record: all-time bests for the records page; and, from the same
-weekly tables, ajr.nation_history (every week's mixed nations ranking).
+"""Recompute ajr.record: all-time bests for the records page.
 
 Run after the nightly full rating (`python -m ajr.records`, about a minute). The
 table is replaced as a whole in one transaction. Most records are SQL queries
@@ -57,16 +56,13 @@ WEEKLY_PLACE = """
 """
 WEEKLY_PLACE_COPY = "copy weekly_place (sunday, weight, athlete_id, place) from stdin"
 
-HISTORY_COPY = "copy ajr.nation_history (day, country_id, place, rating) from stdin"
-
 
 def run_records(today: date | None = None) -> None:
     with Session(engine) as session:
         connection = session.connection()
         # the weekly tables first: the SQL records read their top 10s (weekly_place)
-        history: list[dict] = []
         places: list[tuple] = []
-        weekly = weekly_records(connection, PARAMS, RANKING, today or date.today(), history, places)
+        weekly = weekly_records(connection, PARAMS, RANKING, today or date.today(), places)
         connection.execute(text(WEEKLY_PLACE))
         cursor = connection.connection.cursor()
         with cursor.copy(WEEKLY_PLACE_COPY) as copy:
@@ -88,10 +84,5 @@ def run_records(today: date | None = None) -> None:
             logger.info("%s: %d rows", name, len(rows))
         session.flush()
         connection.execute(text(NAMES))
-        connection.execute(text("delete from ajr.nation_history"))
-        with cursor.copy(HISTORY_COPY) as copy:
-            for row in history:
-                copy.write_row([row["day"], row["country_id"], row["place"], row["rating"]])
-        logger.info("nation_history: %d rows", len(history))
         session.commit()
     logger.info("Records saved")

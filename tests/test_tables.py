@@ -226,33 +226,30 @@ def test_publish_writes_every_athletes_places_and_a_week_later_only_whats_new(mo
     changed = [
         k for k in bucket.objects if k.startswith("places/") and before.get(k) != bucket.objects[k]
     ]
+    nations = json.loads(gzip.decompress(bucket.objects[tables.nations_state_key(version)]))
     assert set(changed) <= {tables.place_key(version, a) for a in state} | {
+        tables.nation_key(version, n) for n in nations} | {
         tables.places_state_key(version), tables.nations_state_key(version)}  # fmt: skip
 
 
-def test_publish_writes_the_nations_weeks_and_again_only_the_changed(monkeypatch):
+def test_publish_writes_the_nations_weeks_from_the_mixed_table(monkeypatch):
     add_data()
     run_rating()
     monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
-    with engine.begin() as c:
-        c.execute(text("insert into ajr.nation_history select date '2026-11-01', id, 1, 1700"
-                       " from ajr.country where ioc = 'JPN'"))  # fmt: skip
     bucket = MemoryBucket()
 
     with connection() as c:
         tables.publish(c, bucket, today=TODAY)
 
     version = json.loads(bucket.objects["manifest.json"])["version"]
-    document = json.loads(gzip.decompress(bucket.objects[tables.nation_key(version, "JPN")]))
-    assert document["weeks"] == [["2026-11-01", 1, 1700]]
-
-    # a week later, the same weeks: not uploaded again (gone from the memory: not put back)
-    with engine.begin() as c:
-        c.execute(text("update ajr.tables_export set pending_from = null"))
-    del bucket.objects[tables.nation_key(version, "JPN")]
+    monday = tables.days_between(tables.FIRST_DAY, TODAY - timedelta(days=1))[-1]
     with connection() as c:
-        tables.publish(c, bucket, today=TODAY + timedelta(days=7))
-    assert tables.nation_key(version, "JPN") not in bucket.objects
+        query = "select country, place, rating from api.teams('mixed', %s)"
+        mixed = c.execute(query, [monday]).fetchall()
+    assert mixed
+    for ioc, place, rating in mixed:
+        document = json.loads(gzip.decompress(bucket.objects[tables.nation_key(version, ioc)]))
+        assert document["weeks"][-1] == [monday.isoformat(), place, rating]
 
 
 def test_merge_places_replaces_the_weeks_from_start_and_trims_absent_ones():
@@ -265,3 +262,25 @@ def test_merge_places_replaces_the_weeks_from_start_and_trims_absent_ones():
     assert merged["3"] == [4, 4096]
     assert tables.unpack(tables.pack(12, 3, 2)) == [12, "-73", 3]
     assert tables.unpack(tables.pack(40, None, 13)) == [40, "+78", None]
+
+
+def test_places_never_written_come_on_a_run_with_no_day(monkeypatch):
+    add_data()
+    run_rating()
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
+    bucket = MemoryBucket()
+    with connection() as c:
+        tables.publish(c, bucket, today=TODAY)
+    version = json.loads(bucket.objects["manifest.json"])["version"]
+    # a bucket from before the places (the release that brought them on a Monday)
+    for key in [k for k in bucket.objects if k.startswith("places/")]:
+        del bucket.objects[key]
+    with engine.begin() as c:
+        c.execute(text("update ajr.tables_export set pending_from = null, places_version = null"))
+
+    with connection() as c:
+        result = tables.publish(c, bucket, today=TODAY)
+
+    assert result.plan.days == []
+    assert tables.places_state_key(version) in bucket.objects
+    assert any(k.startswith(f"places/{version}/athletes/") for k in bucket.objects)

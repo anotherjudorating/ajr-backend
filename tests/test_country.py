@@ -1,18 +1,14 @@
-"""The country page (api.country, api.country_leaders, api.country_tournaments, the
-nation's weeks the tables job puts in R2), the nations rankings behind it and the
-contests before a tournament."""
+"""The country page (api.country, api.country_leaders, api.country_tournaments), the
+nations rankings behind it and the contests before a tournament."""
 
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 from sqlalchemy import text, update
 from sqlmodel import Session
 
-import ajr.tables as tables
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Country
-from ajr.records import weekly
-from ajr.records.job import run_records
 from tests.test_api import add_data, add_moves, call, refresh
 
 pytestmark = pytest.mark.usefixtures("clean_db")
@@ -29,15 +25,6 @@ def prepare() -> None:
         session.execute(update(Athlete).where(Athlete.id == 3).values(country_id=2))
         session.commit()
     refresh()
-
-
-def add_history(*rows: tuple[date, int, int, int]) -> None:
-    with engine.begin() as connection:
-        for day, country_id, place, rating in rows:
-            connection.execute(
-                text("insert into ajr.nation_history values (:day, :country, :place, :rating)"),
-                {"day": day, "country": country_id, "place": place, "rating": rating},
-            )
 
 
 def test_nation_snapshot_ranks_as_teams_does():
@@ -57,20 +44,18 @@ def test_nation_snapshot_ranks_as_teams_does():
 
 def test_country():
     prepare()
-    add_history(
-        (TODAY - timedelta(days=100), 1, 2, 1500),
-        (TODAY - timedelta(days=93), 1, 1, 1600),  # the latest week 90 days back
-        (TODAY - timedelta(days=93), 2, 2, 1400),
-        (TODAY - timedelta(days=200), 1, 3, 1300),
-    )
-    refresh()  # the page's numbers come from the rating job's run
 
     [japan] = call("select * from api.country('JPN')")
 
     assert (japan["name"], japan["athletes"]) == ("Japan", 6)
     assert (japan["place"], japan["place_men"], japan["place_women"]) == (1, 1, None)
-    assert (japan["place_90d"], japan["rating_90d"]) == (1, 1600)
-    assert (japan["place_6m"], japan["rating_6m"]) == (3, 1300)
+    # then: the mixed nations table of that week's Monday, as the country page's chart
+    [weeks] = call("""select date_trunc('week', current_date - 90)::date d90,
+                             date_trunc('week', current_date - interval '6 months')::date m6""")
+    for day, place, rating in (("d90", "place_90d", "rating_90d"), ("m6", "place_6m", "rating_6m")):
+        then = {r["country"]: r for r in call("select * from api.teams('mixed', :d)", d=weeks[day])}
+        expected = (then["JPN"]["place"], then["JPN"]["rating"]) if "JPN" in then else (None, None)
+        assert (japan[place], japan[rating]) == expected
     scores = sorted(
         row["score"]
         for weight in ("-73", "-81")
@@ -106,18 +91,6 @@ def test_country_leaders():
         assert scores == sorted(scores, reverse=True) and 1 <= len(scores) <= 5
 
 
-def test_nation_documents():
-    prepare()
-    add_history((TODAY - timedelta(days=7), 1, 1, 1600), (TODAY - timedelta(days=14), 1, 2, 1500),
-                (TODAY - timedelta(days=7), 2, 2, 1400))  # fmt: skip
-
-    with engine.connect() as connection:
-        documents = tables.nation_documents(connection.connection.driver_connection)
-
-    assert [week[1:] for week in documents["JPN"]["weeks"]] == [[2, 1500], [1, 1600]]
-    assert documents["FRA"]["weeks"] == [[(TODAY - timedelta(days=7)).isoformat(), 2, 1400]]
-
-
 def test_country_tournaments():
     prepare()
 
@@ -143,24 +116,3 @@ def test_contests_before():
     assert first == {1: 0, 2: 0, 3: 0}  # debuts
     # 2 and 3 fought once at 10, 4 once at 20, 6 once at 30
     assert later == {2: 1, 3: 1, 4: 1, 6: 1}
-
-
-def test_nations_ranking_ties_share_a_place():
-    rows = weekly.nations_ranking({10: 1800.2, 20: 1850, 30: 1799.8}, date(2026, 1, 4))
-
-    assert [(row["country_id"], row["place"], row["rating"]) for row in rows] == [
-        (20, 1, 1850),
-        (10, 2, 1800),
-        (30, 2, 1800),
-    ]
-
-
-def test_records_job_replaces_the_nation_history():
-    prepare()
-    add_history((TODAY - timedelta(days=7), 1, 1, 1600))
-
-    run_records()
-
-    # the test tables are too thin for team ratings: nothing comes back
-    with engine.connect() as connection:
-        assert connection.execute(text("select count(*) from ajr.nation_history")).scalar() == 0

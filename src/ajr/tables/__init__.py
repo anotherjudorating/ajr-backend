@@ -14,7 +14,7 @@ Layout of the bucket:
     places/<version>/athletes/<athlete_id>.json           an athlete's place every week
     places/<version>/state.json                           every athlete's, for the next run
     places/<version>/nations/<IOC>.json                   a nation's place and rating every week
-    places/<version>/nations-state.json                   their hashes, for the next run
+    places/<version>/nations-state.json                   every nation's, for the next run
     archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz, README.md
 
 <version> is a hash of the rating settings: a new formula is written under a new
@@ -32,10 +32,8 @@ replace the ones they cover in the state of the last run (state.json), and only 
 files that changed are uploaded. They change every week, so they are not under v/ (a
 year at the edge): places/ is cached an hour (ajr-web/infra/cloudflare.tf).
 
-A nation's weeks (the mixed nations ranking, for the country page's chart) are the
-records job's ajr.nation_history, which only the working copy keeps (ajr/publish): a
-file per nation, uploaded when it changed (the nightly records), none while the table
-is empty (a working copy just restored from production, before the records).
+A nation's weeks (its place and rating in the mixed nations table every Monday, for the
+country page's chart) come the same way, from the same tables, a file per nation.
 
 The update job runs `python -m ajr.tables publish` after the publish to production:
 the rating job marks from which day the tables are stale (ajr.tables_export.pending_from),
@@ -114,11 +112,12 @@ class State:
     pending_from: date | None
     version: str | None
     last_day: date | None
+    places_version: str | None = None  # the version the places files are written for
 
 
 def load_state(connection: Connection) -> State:
     row = connection.execute(
-        "select pending_from, version, last_day from ajr.tables_export where id = 1"
+        "select pending_from, version, last_day, places_version from ajr.tables_export where id = 1"
     ).fetchone()
     return State(*row) if row else State(None, None, None)
 
@@ -259,22 +258,28 @@ def place_document(entry: list[int]) -> dict:
             "weeks": [unpack(c) for c in codes]}  # fmt: skip
 
 
-NATION_WEEKS = """
-    select co.ioc, h.day, h.place, h.rating
-    from ajr.nation_history h
-    join ajr.country co on co.id = h.country_id
-    order by co.ioc, h.day
-"""
+# A nation's week, packed as an athlete's: its place and rating.
+def pack_nation(place: int, rating: int) -> int:
+    return place * 8192 + rating
 
 
-def nation_documents(connection: Connection) -> dict[str, dict]:
-    """Every nation's file: a week a row (the Sunday, the place, the rating)."""
-    out: dict[str, dict] = {}
-    for ioc, day, place, rating in connection.execute(NATION_WEEKS):
-        out.setdefault(ioc, {"format": FORMAT, "weeks": []})["weeks"].append(
-            [day.isoformat(), place, rating]
-        )
-    return out
+def week_nations(tables: list[tuple[str, str, list[dict]]]) -> dict[str, int]:
+    """A day's packed week of every nation in the mixed nations table (day_tables)."""
+    return {
+        row["country"]: pack_nation(row["place"], row["rating"])
+        for table, name, rows in tables
+        if table == "teams" and name == "mixed"
+        for row in rows
+    }
+
+
+def nation_document(entry: list[int]) -> dict:
+    """A nation's file: a week a row (the Monday, the place, the rating), its weeks
+    outside the table left out."""
+    first, *codes = entry
+    weeks = [[(FIRST_DAY + timedelta(weeks=first + i)).isoformat(), c // 8192, c % 8192]
+             for i, c in enumerate(codes) if c]  # fmt: skip
+    return {"format": FORMAT, "weeks": weeks}
 
 
 def encode(document: dict) -> bytes:
@@ -507,6 +512,7 @@ def publish(
         and state.pending_from is None
         and state.version == current
         and state.last_day == monday(today - timedelta(days=1))
+        and state.places_version == current
     ):
         # nothing stale and nothing new: no request to R2 at all (most runs)
         return Result(Plan(current, False, [], 0), 0, 0, 0)
@@ -516,6 +522,7 @@ def publish(
     connection.execute("set work_mem = '64MB'")
 
     weeks: list[dict[int, int]] = []
+    nation_weeks: list[dict[str, int]] = []
     for day in plan.days:
         computed = day_tables(connection, day)
         for table, name, rows in computed:
@@ -524,53 +531,54 @@ def publish(
             key = day_key(current, table, name, day, plan.generation)
             bucket.put(key, encode(document), "application/json", IMMUTABLE, gzipped=True)
         weeks.append(week_places(computed))
+        nation_weeks.append(week_nations(computed))
         if len(bucket.pending) > 2000:
             bucket.wait()
 
-    # the athletes' places: the computed weeks over the last run's, only changed files up
-    if plan.days:
+    # the athletes' places and the nations' weeks: the computed weeks over the last run's,
+    # only changed files up; also with no day to compute when they were never written
+    # for this version
+    if plan.days or state.places_version != current:
         old: dict = {}
+        old_nations: dict = {}
         if not plan.full:
             body = bucket.get(places_state_key(current))
             old = json.loads(gzip.decompress(body)) if body else {}
-        start = (plan.days[0] - FIRST_DAY).days // 7
-        if not old and not plan.full and start > 0:
+            body = bucket.get(nations_state_key(current))
+            old_nations = json.loads(gzip.decompress(body)) if body else {}
+        # the first week computed (with no days: the one after the bucket's last)
+        end = (
+            plan.days[0]
+            if plan.days
+            else date.fromisoformat(manifest["last_day"]) + timedelta(weeks=1)
+        )
+        start = (end - FIRST_DAY).days // 7
+        if not (old and old_nations) and not plan.full and start > 0:
             # no state yet (the first run with places): the weeks before, places only;
             # the files of the first layout (under v/, a year at the edge) go
             bucket.delete_prefix(f"v/{current}/places")
-            before = days_between(FIRST_DAY, plan.days[0] - timedelta(days=1))
-            weeks = [week_places(day_tables(connection, day)) for day in before] + weeks
-            start = 0
-        places = merge_places(old, start, weeks)
-        # an athlete no longer in any computed table keeps a file, with no weeks
-        for aid, entry in {**{a: [0] for a in old if a not in places}, **places}.items():
-            if old.get(aid) != entry:
-                empty = {"format": FORMAT, "weeks": []}
-                document = place_document(entry) if len(entry) > 1 else empty
-                bucket.put(place_key(current, aid), encode(document), "application/json",
-                           PLACES_CACHE, gzipped=True)  # fmt: skip
-            if len(bucket.pending) > 2000:
-                bucket.wait()
-        bucket.put(places_state_key(current), encode(places), "application/json", "no-store",
-                   gzipped=True)  # fmt: skip
-
-    # the nations' weeks: the files whose content changed since the last run (the
-    # nightly records); their hashes are the state
-    nations = nation_documents(connection) if plan.days or plan.full else {}
-    if nations:
-        old_hashes: dict = {}
-        if not plan.full:
-            body = bucket.get(nations_state_key(current))
-            old_hashes = json.loads(gzip.decompress(body)) if body else {}
-        hashes = {}
-        for ioc, document in nations.items():
-            body = encode(document)
-            hashes[ioc] = hashlib.sha256(body).hexdigest()
-            if old_hashes.get(ioc) != hashes[ioc]:
-                bucket.put(nation_key(current, ioc), body, "application/json", PLACES_CACHE,
-                           gzipped=True)  # fmt: skip
-        bucket.put(nations_state_key(current), encode(hashes), "application/json", "no-store",
-                   gzipped=True)  # fmt: skip
+            before = [
+                day_tables(connection, day)
+                for day in days_between(FIRST_DAY, end - timedelta(days=1))
+            ]
+            weeks = [week_places(t) for t in before] + weeks
+            nation_weeks = [week_nations(t) for t in before] + nation_weeks
+            old, old_nations, start = {}, {}, 0
+        for state_key, key, document, previous, new in (
+            (places_state_key, place_key, place_document, old, merge_places(old, start, weeks)),
+            (nations_state_key, nation_key, nation_document, old_nations,
+             merge_places(old_nations, start, nation_weeks)),
+        ):  # fmt: skip
+            # one no longer in any computed table keeps a file, with no weeks
+            for name, entry in {**{n: [0] for n in previous if n not in new}, **new}.items():
+                if previous.get(name) != entry:
+                    body = document(entry) if len(entry) > 1 else {"format": FORMAT, "weeks": []}
+                    bucket.put(key(current, name), encode(body), "application/json",
+                               PLACES_CACHE, gzipped=True)  # fmt: skip
+                if len(bucket.pending) > 2000:
+                    bucket.wait()
+            bucket.put(state_key(current), encode(new), "application/json", "no-store",
+                       gzipped=True)  # fmt: skip
 
     archive = dict((manifest or {}).get("archive", {})) if not plan.full else {}
     if plan.days or plan.full:
@@ -636,10 +644,12 @@ def publish(
     deleted += sum(bucket.delete_prefix(f"places/{v}/") for v in plan.delete)
     deleted += sum(bucket.delete_prefix(f"archive/{v}/") for v in expired)
     connection.execute(
-        "insert into ajr.tables_export (id, version, last_day) values (1, %s, %s)"
+        "insert into ajr.tables_export (id, version, last_day, places_version)"
+        " values (1, %s, %s, %s)"
         " on conflict (id) do update set pending_from = null, version = excluded.version,"
-        " last_day = excluded.last_day, updated_at = now()",
-        [current, last_day],
+        " last_day = excluded.last_day, places_version = excluded.places_version,"
+        " updated_at = now()",
+        [current, last_day, current],
     )
     connection.commit()
     return Result(plan, bucket.uploaded, bucket.bytes, deleted)
