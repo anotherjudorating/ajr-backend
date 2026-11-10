@@ -159,8 +159,8 @@ PREVIOUS_PEAKS = text("""
 # nation with a rated athlete, how many, and how many stand in a table today. Built
 # here so the function reads 2 pages, not athlete_summary and athlete whole.
 # Also the country page's numbers (api.country): its places in today's nations tables,
-# the mixed rating then and 90 days and 6 months ago (ajr.nation_history, which the
-# records job writes), and its best scores today.
+# the mixed rating then and 90 days and 6 months ago (the mixed nations table of that
+# week's Monday, as the country page's chart: ajr/tables), and its best scores today.
 NATION_SUMMARY = text("""
     insert into ajr.nation_summary
         (country_id, country, name, athletes, active,
@@ -175,9 +175,8 @@ NATION_SUMMARY = text("""
         group by co.id, co.ioc, co.name
     ),
     weeks as (
-        select (select max(day) from ajr.nation_history where day <= current_date - 90) as d90,
-               (select max(day) from ajr.nation_history
-                where day <= current_date - interval '6 months') as m6
+        select date_trunc('week', current_date - 90)::date as d90,
+               date_trunc('week', current_date - interval '6 months')::date as m6
     )
     select n.id, n.ioc, n.name, n.athletes, n.active,
            mixed.place, men.place, women.place, mixed.rating,
@@ -187,8 +186,8 @@ NATION_SUMMARY = text("""
     left join ajr.nation_snapshot mixed on mixed.kind = 'mixed' and mixed.country_id = n.id
     left join ajr.nation_snapshot men on men.kind = 'men' and men.country_id = n.id
     left join ajr.nation_snapshot women on women.kind = 'women' and women.country_id = n.id
-    left join ajr.nation_history d90 on d90.country_id = n.id and d90.day = w.d90
-    left join ajr.nation_history m6 on m6.country_id = n.id and m6.day = w.m6
+    left join api.teams('mixed', w.d90) d90 on d90.country = n.ioc
+    left join api.teams('mixed', w.m6) m6 on m6.country = n.ioc
     cross join lateral (
         select max(top.score)::integer as top1, round(avg(top.score))::integer as top8
         from (select l.score from ajr.leaderboard_snapshot l
