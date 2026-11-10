@@ -74,6 +74,8 @@ def test_recent_upsets():
     assert upset["winner_chance"] <= 0.35
     assert upset["loser_score"] > upset["winner_score"]
     assert call("select * from api.recent_upsets(5, 4)") == []  # it started 10 days ago
+    # only over an athlete in the top of their table: 1 is not in a top 0
+    assert call("select * from api.recent_upsets(30, 4, 0)") == []
 
 
 def test_upcoming():

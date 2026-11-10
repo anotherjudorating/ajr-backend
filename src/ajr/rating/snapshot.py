@@ -207,7 +207,7 @@ CONTEST_LIST = text("""
          white_score_before, white_score_after, blue_score_before, blue_score_after,
          real_fight)
     select ct.id, ct.competition_id, cm.name, extract(year from cm.date_from)::integer,
-           w.fought_on, ct.weight, ct.round_name, ct.round, ct.fight_no, ct.winner_id,
+           w.fought_on, ct.weight, ct.stage, ct.round, ct.fight_no, ct.winner_id,
            ct.white_id, wa.family_name, wa.given_name, wc.ioc, w.win_probability,
            round(w.rating_after - w.rating_before)::integer,
            ct.blue_id, ba.family_name, ba.given_name, bc.ioc, b.win_probability,
@@ -240,7 +240,7 @@ CONTEST_LIST = text("""
            case when ct.started_at::date
                      between cm.date_from - 1 and coalesce(cm.date_to, cm.date_from) + 1
                 then ct.started_at::date else cm.date_from end,
-           ct.weight, ct.round_name, ct.round, ct.fight_no, ct.winner_id,
+           ct.weight, ct.stage, ct.round, ct.fight_no, ct.winner_id,
            ct.white_id, wa.family_name, wa.given_name, wc.ioc, null, null,
            ct.blue_id, ba.family_name, ba.given_name, bc.ioc, null, null,
            null, null, null, null, null, false
@@ -356,7 +356,7 @@ ATHLETE_COMPETITION = text("""
     ),
     fights as (
         select f.athlete_id, ct.competition_id, ct.weight, ct.id, ct.round, ct.fight_no,
-               ct.round_name, f.seq, f.won, f.score_before, f.score_after, f.before
+               ct.round_name, ct.stage, f.seq, f.won, f.score_before, f.score_after, f.before
         from (select * from rated union all select * from walkovers) f
         join ajr.contest ct on ct.id = f.contest_id
         where ct.weight is not null
@@ -377,6 +377,8 @@ ATHLETE_COMPETITION = text("""
                -- 0), the contest id when two have the same round and number
                (array_agg(round_name order by round nulls last, fight_no desc, id desc))[1]
                    as last_round,
+               (array_agg(stage order by round nulls last, fight_no desc, id desc))[1]
+                   as last_stage,
                (array_agg(won order by round nulls last, fight_no desc, id desc))[1] as last_won,
                count(*) as contests,
                count(*) filter (where won) as wins,
@@ -388,7 +390,8 @@ ATHLETE_COMPETITION = text("""
     -- names, gender and nation as they are at the run, so the tournament's results
     -- read one table; a rename or a new nation comes with the next run
     select b.athlete_id, b.competition_id, b.weight,
-           case when o.weight is not null then ajr.result_label(b.last_round, b.last_won) end,
+           case when o.weight is not null
+                then ajr.result_label(b.last_round, b.last_won, b.last_stage) end,
            round(b.score_before), round(b.score_after), b.contests, b.wins, b.contests_before,
            a.family_name, a.given_name, a.gender, co.ioc
     from by_athlete b
@@ -414,7 +417,7 @@ HISTORY_FACTS = text("""
            opponent_country = f.ioc, result = f.result
       from (
           select rc.contest_id, rc.athlete_id,
-                 ct.competition_id, ct.round, ct.fight_no, ct.round_name,
+                 ct.competition_id, ct.round, ct.fight_no, ct.stage as round_name,
                  orc.rating_before as opponent_rating_before,
                  orc.rd_before as opponent_rd_before,
                  o.family_name, o.given_name, co.ioc, r.result

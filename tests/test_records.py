@@ -81,7 +81,13 @@ def test_record_filters():
     assert [row["athlete_id"] for row in women] == [3]
     assert len(everyone) > len(women)
     assert {row["weight"] for row in in_81} == {"-81"}
-    # nations' records are the same for men and women
+    # a nation's and a tournament's records for both genders and for each: both
+    # genders' rows without a filter, one gender's with it
+    medals = call("select * from api.record('most_medals_nation')")
+    women_medals = call("select * from api.record('most_medals_nation', 'female')")
+    assert medals and all(row["gender"] is None for row in medals)
+    assert all(row["gender"] == "female" for row in women_medals)
+    assert sum(r["value"] for r in women_medals) < sum(r["value"] for r in medals)
     assert call("select * from api.records(10, 'female')") != []
 
 

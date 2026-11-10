@@ -90,12 +90,15 @@ def weekly_records(
     weights_p4p: dict[int, Counter[str]] = defaultdict(Counter)
     last_p4p: dict[int, date] = {}
     p4p_lead: dict[int, tuple[float, date, str]] = {}
-    team_best: dict[int, tuple[float, date]] = {}
+    # a nation's records for men and women together (None) and for each gender
+    scopes = {None: WEIGHTS, **GENDERS}
+    team_best: dict[str | None, dict[int, tuple[float, date]]] = {g: {} for g in scopes}
     runs_at_1, runs_p4p, runs_top_10 = Runs(), Runs(), Runs()
     weeks_top_10: Counter[int] = Counter()
     weights_top_10: dict[int, Counter[str]] = defaultdict(Counter)
     last_top_10: dict[int, date] = {}
-    deepest: dict[int, tuple[int, int, date]] = {}  # nation -> athletes, weights, sunday
+    # scope -> nation -> athletes, weights, sunday
+    deepest: dict[str | None, dict[int, tuple[int, int, date]]] = {g: {} for g in scopes}
 
     states: dict[int, AthleteState] = {}
     first_day = rows[0].fought_on
@@ -142,16 +145,17 @@ def weekly_records(
             weeks_top_10[athlete_id] += 1
             weights_top_10[athlete_id][weight] += 1
             last_top_10[athlete_id] = sunday
-        athletes_of: Counter[int] = Counter()
-        weights_of: dict[int, set[str]] = defaultdict(set)
-        for athlete_id, weight in top_10.items():
-            nation = country.get(athlete_id)
-            if nation is not None:
-                athletes_of[nation] += 1
-                weights_of[nation].add(weight)
-        for nation, count in athletes_of.items():
-            if count > deepest.get(nation, (0,))[0]:
-                deepest[nation] = (count, len(weights_of[nation]), sunday)
+        for scope, scope_weights in scopes.items():
+            athletes_of: Counter[int] = Counter()
+            weights_of: dict[int, set[str]] = defaultdict(set)
+            for athlete_id, weight in top_10.items():
+                nation = country.get(athlete_id)
+                if nation is not None and weight in scope_weights:
+                    athletes_of[nation] += 1
+                    weights_of[nation].add(weight)
+            for nation, count in athletes_of.items():
+                if count > deepest[scope].get(nation, (0,))[0]:
+                    deepest[scope][nation] = (count, len(weights_of[nation]), sunday)
 
         p4p_1: dict[int, str] = {}
         for weights in GENDERS.values():
@@ -167,13 +171,17 @@ def weekly_records(
                 p4p_lead[athlete_id] = (gap, sunday, weight)
         runs_p4p.week(sunday, p4p_1)
 
-        if len(tables) == 14:  # team ratings only when every weight has a table
-            ratings = team_ratings(tables, country)
-            if nation_history is not None:
+        for scope, scope_weights in scopes.items():
+            # team ratings only when every weight of the scope has a table
+            if not all(w in tables for w in scope_weights):
+                continue
+            ratings = team_ratings({w: tables[w] for w in scope_weights}, country)
+            if scope is None and nation_history is not None:
                 nation_history.extend(nations_ranking(ratings, sunday))
             for nation, score in ratings.items():
-                if nation not in team_best or score > team_best[nation][0]:
-                    team_best[nation] = (score, sunday)
+                best = team_best[scope]
+                if nation not in best or score > best[nation][0]:
+                    best[nation] = (score, sunday)
 
         sunday += WEEK
 
@@ -222,15 +230,24 @@ def weekly_records(
              for a, (gap, day, weight) in p4p_lead.items()],
             best="high",
         ),
-        "highest_team_rating": ranked(
-            [record(country_id=n, value=score, day=day) for n, (score, day) in team_best.items()],
-            best="high",
-        ),
-        "deepest_team": ranked(
-            [record(country_id=n, value=count, day=day, detail={"weights": weights})
-             for n, (count, weights, day) in deepest.items()],
-            best="high",
-        ),
+        "highest_team_rating": [
+            row
+            for g, best in team_best.items()
+            for row in ranked(
+                [record(country_id=n, value=score, day=day, gender=g)
+                 for n, (score, day) in best.items()],
+                best="high",
+            )
+        ],
+        "deepest_team": [
+            row
+            for g, best in deepest.items()
+            for row in ranked(
+                [record(country_id=n, value=count, day=day, detail={"weights": weights}, gender=g)
+                 for n, (count, weights, day) in best.items()],
+                best="high",
+            )
+        ],
     }  # fmt: skip
 
 

@@ -29,7 +29,7 @@ SETUP = [
         having count(*) filter (where round_name = 'Final') = 1
     )
     select distinct on (p.athlete_id, ct.competition_id, ct.weight)
-           p.athlete_id, a.country_id, ct.competition_id, ct.weight,
+           p.athlete_id, a.country_id, a.gender, ct.competition_id, ct.weight,
            cm.date_from as day, cm.rank_name,
            ajr.result_label(ct.round_name, ct.winner_id = p.athlete_id) as result
     from ajr.contest ct
@@ -53,10 +53,10 @@ SETUP = [
     """
     create temp table fight on commit drop as
     select rc.athlete_id, rc.opponent_id, rc.contest_id, rc.seq, rc.fought_on, rc.weight, rc.won,
-           rc.win_probability, rc.rd_before, ct.competition_id,
+           rc.win_probability, rc.rd_before, ct.competition_id, fa.gender,
            rc.rating_before, rc.rating_after, o.rating_before as opponent_rating,
            rc.rating_before - s.rd_factor * rc.rd_before as score_before,
-           cm.rank_name, ct.round_name, coalesce(ct.golden_score, false) as golden_score,
+           cm.rank_name, ct.round_name, ct.stage, coalesce(ct.golden_score, false) as golden_score,
            ct.duration,
            rc.fought_on - (extract(dow from rc.fought_on)::int
                            + case when extract(dow from rc.fought_on) = 0 then 7 else 0 end)
@@ -64,6 +64,7 @@ SETUP = [
     from ajr.rating_change rc
     cross join ajr.rating_settings s
     join ajr.rating_change o on o.contest_id = rc.contest_id and o.athlete_id = rc.opponent_id
+    join ajr.athlete fa on fa.id = rc.athlete_id
     join ajr.contest ct on ct.id = rc.contest_id
     join ajr.competition cm on cm.id = ct.competition_id
     """,
@@ -101,6 +102,22 @@ SETUP = [
 # How much a meeting counts by the rating: 0 at 1900 (below the elite), 1 at 2500.
 def strength(rating: str) -> str:
     return f"greatest(0, least(1, ({rating} - 1900) / 600))"
+
+
+# The records of nations and tournaments, computed for men and women together and for
+# each: a query's {only} keeps one gender's athletes; one gender has 7 weights, so
+# the thresholds are halved ({min_weights}: of 14 weights 10, of 7 5; {min_contests}).
+BY_GENDER = {"strongest_tournament", "most_nations_on_podium", "most_unpredictable_tournament",
+             "most_medals_nation"}  # fmt: skip
+
+
+def scoped(query: str, gender: str | None) -> str:
+    """A BY_GENDER query for both genders (None) or one."""
+    return (
+        query.replace("{only}", f"and gender = '{gender}'" if gender else "")
+        .replace("{min_weights}", "5" if gender else "10")
+        .replace("{min_contests}", "50" if gender else "100")
+    )
 
 
 RECORDS = {
@@ -370,7 +387,7 @@ RECORDS = {
     "longest_contest": f"""
         select rank() over (order by seconds desc), athlete_id, opponent_id, null::int,
                competition_id, weight, seconds,
-               jsonb_build_object('contest', contest_id, 'round', round_name), fought_on
+               jsonb_build_object('contest', contest_id, 'round', stage), fought_on
         from (
             select *, extract(epoch from cast(duration as interval)) as seconds
             from fight
@@ -460,6 +477,7 @@ RECORDS = {
             select distinct on (athlete_id, competition_id)
                    athlete_id, competition_id, weight, score_before
             from rated_fight
+            where true {{only}}
             order by athlete_id, competition_id, seq
         ),
         best as (
@@ -475,7 +493,7 @@ RECORDS = {
         join ajr.competition cm on cm.id = best.competition_id
         where n <= 8
         group by competition_id
-        having count(distinct weight) >= 10
+        having count(distinct weight) >= {{min_weights}}
         order by 1
         limit {TOP}
     """,
@@ -483,7 +501,7 @@ RECORDS = {
         select rank() over (order by count(distinct country_id) desc), null::int, null::int,
                null::int, competition_id, null, count(distinct country_id), null::jsonb, min(day)
         from finish
-        where result in {MEDALS}
+        where result in {MEDALS} {{only}}
         group by competition_id
         order by 1
         limit {TOP}
@@ -498,9 +516,9 @@ RECORDS = {
                ),
                min(fought_on)
         from rated_fight
-        where won
+        where won {{only}}
         group by competition_id
-        having count(*) >= 100
+        having count(*) >= {{min_contests}}
         order by 1
         limit {TOP}
     """,
@@ -514,7 +532,7 @@ RECORDS = {
                ),
                max(day)
         from medal
-        where country_id is not null
+        where country_id is not null {{only}}
         group by country_id
         order by 1
         limit {TOP}

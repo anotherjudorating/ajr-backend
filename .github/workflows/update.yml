@@ -34,6 +34,10 @@ on:
         description: Recompute the records
         type: boolean
         default: false
+      records_force:
+        description: Recompute the records even if no result changed (after a release that changes them)
+        type: boolean
+        default: false
       check:
         description: Compare every table with production at the end (reads all of production)
         type: boolean
@@ -110,10 +114,10 @@ jobs:
         id: rating
         run: uv run python -m ajr.rating ${{ (inputs.full || inputs.full_rating) && '--full' || '' }}
       - name: Records
-        if: inputs.records
+        if: inputs.records || inputs.records_force
         # only if results changed since the last records (or a week passed), or the
-        # full rating just corrected the history
-        run: uv run python -m ajr.records ${{ steps.rating.outputs.corrected == '0' && '--if-changed' || '' }}
+        # full rating just corrected the history, or asked to (records_force)
+        run: uv run python -m ajr.records ${{ (steps.rating.outputs.corrected == '0' && !inputs.records_force) && '--if-changed' || '' }}
 
       - name: Publish
         id: publish

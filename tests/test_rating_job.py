@@ -3,7 +3,7 @@
 from datetime import date, datetime
 
 import pytest
-from sqlalchemy import delete, func, update
+from sqlalchemy import delete, func, text, update
 from sqlmodel import Session, select
 
 from ajr.core.db import engine
@@ -25,6 +25,7 @@ from ajr.rating import snapshot
 from ajr.rating.__main__ import main
 from ajr.rating.engine import RatingParams
 from ajr.rating.job import LATEST, RatingCheckError, run_rating
+from tests.test_api import add_data
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -584,7 +585,7 @@ def test_history_rows_carry_their_facts():
 
     rows = changes()
     row = rows[(101, 1)]
-    assert (row.competition_id, row.round, row.fight_no, row.round_name) == (10, 0, 7, "Final")
+    assert (row.competition_id, row.round, row.fight_no, row.round_name) == (10, 0, 7, "F")
     assert row.opponent_rating_before == rows[(101, 2)].rating_before
     assert row.opponent_rd_before == rows[(101, 2)].rd_before
     assert (row.opponent_family_name, row.opponent_country) == ("A2", "JPN")
@@ -732,3 +733,34 @@ def test_a_run_without_new_results_completes_a_list_a_migration_left_incomplete(
             text_("select count(*) from ajr.contest_list where white_score_before is null")
         ).scalar()
     assert missing == 0
+
+
+def test_stages_count_from_the_final():
+    """One code per stage of a draw (ajr.fill_stages), whatever judobase calls it."""
+    add_data()
+    with Session(engine) as session:
+        session.add(Competition(id=60, name="Draws", date_from=date(2026, 1, 1)))
+        session.flush()
+        rounds = [
+            # a knockout draw named "Round N" from the start: the round number says
+            ("-60", "Round 4", 3), ("-60", "Round 1", 6), ("-60", "Quarter-Final", 2),
+            ("-60", "Semi Final", 1), ("-60", "Final", 0), ("-60", "Bronze", 0),
+            ("-60", "Repechage", 1), ("-66", "best 16", 3), ("-66", "Round of 32", 4),
+            ("-66", "\u00b8Round 3", 2),  # a stray character, the draw a knockout
+            # a round robin: tours
+            ("-73", "Round 1", 2), ("-73", "Round 2", 1), ("-73", "?", 0),
+        ]  # fmt: skip
+        for i, (weight, name, number) in enumerate(rounds):
+            contest = Contest(id=600 + i, competition_id=60, blue_id=1, white_id=2, winner_id=1,
+                              weight=weight, round=number, round_name=name)  # fmt: skip
+            session.add(contest)
+        session.commit()
+        session.execute(text("select ajr.fill_stages(array[60])"))
+        session.commit()
+        stages = dict(session.execute(text(
+            "select id, stage from ajr.contest where competition_id = 60"
+        )).all())  # fmt: skip
+
+    assert [stages[600 + i] for i in range(len(rounds))] == [
+        "1/8", "1/64", "1/4", "1/2", "F", "BR", "REP", "1/8", "1/16", "R3", "R1", "R2", None,
+    ]  # fmt: skip
