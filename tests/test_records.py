@@ -65,6 +65,7 @@ def test_records():
     # the names come with every row, written by the job
     athletes = [row for rows in records.values() for row in rows if row["athlete_id"]]
     assert all(row["family_name"] and row["country"] for row in athletes)
+
     # too few athletes in a table for the weekly records
     assert "longest_at_1" not in records
 
@@ -109,6 +110,9 @@ def test_weekly_records(monkeypatch):
     assert all(row["detail"]["opponent_place"] <= 10 for row in records.get("biggest_upsets", []))
     assert "biggest_lead" not in records
     assert "highest_team_rating" not in records  # needs a table in every weight
+    # a record's second athlete comes with their nation, as with their name
+    opponents = [row for rows in records.values() for row in rows if row["opponent_id"]]
+    assert opponents and all(row["opponent_country"] for row in opponents)
     # the rows computed in Python get their names too
     assert at_1[1]["family_name"].startswith("NAME") and at_1[1]["country"]
 

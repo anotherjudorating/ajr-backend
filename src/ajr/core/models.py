@@ -313,6 +313,7 @@ class Record(SQLModel, table=True):
     gender: str | None = Field(default=None, sa_type=Text)
     opponent_family_name: str | None = Field(default=None, sa_type=Text)
     opponent_given_name: str | None = Field(default=None, sa_type=Text)
+    opponent_country: str | None = Field(default=None, sa_type=Text)  # their nation's code
     country: str | None = Field(default=None, sa_type=Text)  # the nation's code
     country_name: str | None = Field(default=None, sa_type=Text)
     competition: str | None = Field(default=None, sa_type=Text)
