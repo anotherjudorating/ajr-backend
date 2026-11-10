@@ -273,6 +273,7 @@ def test_athlete_page_fields():
         if row["athlete_id"] == 6
     ]
     assert (athlete["peak_score"], athlete["peak_place"]) == (peak_row["score"], peak_row["place"])
+    assert athlete["peak_weight"] == "-73"  # the table of that day, for the site's link
     assert athlete["score_change_90d"] is not None
     assert athlete["places_up_90d"] is None  # not in the -73 table 90 days ago
 
