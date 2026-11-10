@@ -27,6 +27,19 @@ restore)
     docker exec db pg_restore -U postgres -d postgres --data-only --disable-triggers \
       --exit-on-error /work/production.dump
     rm production.dump
+    # production's sequences never moved (its rows come from the publish): each one
+    # after its table's highest id, or the next insert takes a used one
+    docker exec db psql -U postgres -v ON_ERROR_STOP=1 -q -c "do \$\$ declare r record; begin
+      for r in select s.relname as seq, t.relname as tab, a.attname as col
+               from pg_class s
+               join pg_depend d on d.objid = s.oid and d.deptype in ('a', 'i')
+               join pg_class t on t.oid = d.refobjid
+               join pg_attribute a on a.attrelid = t.oid and a.attnum = d.refobjsubid
+               join pg_namespace n on n.oid = s.relnamespace
+               where s.relkind = 'S' and n.nspname = 'ajr' loop
+        execute format('select setval(%L, coalesce((select max(%I) from ajr.%I), 0) + 1, false)',
+                       'ajr.' || r.seq, r.col, r.tab);
+      end loop; end \$\$"
     uv run python -m ajr.publish adopt
   fi
   ;;
