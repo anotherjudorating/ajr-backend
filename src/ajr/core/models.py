@@ -108,6 +108,7 @@ class Contest(SQLModel, table=True):
     round: int | None = None
     round_code: str | None = None  # position in the bracket
     round_name: str | None = None
+    stage: str | None = None  # from the final: F, 1/2, 1/4, 1/8…, BR, REP, R1… (ajr.fill_stages)
     fight_no: int | None = None
     started_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     duration: str | None = None

@@ -26,7 +26,7 @@ def test_competition_results():
     rows = call("select * from api.competition_results(40)")
 
     results = {row["athlete_id"]: row["result"] for row in rows}
-    assert results == {4: "gold", 6: "silver", 2: "Semi-Final", 3: "Semi-Final"}
+    assert results == {4: "gold", 6: "silver", 2: "1/2", 3: "1/2"}
     assert [row["athlete_id"] for row in rows][:2] == [4, 6]  # medals first
     gold = rows[0]
     assert (gold["contests"], gold["wins"]) == (2, 2)

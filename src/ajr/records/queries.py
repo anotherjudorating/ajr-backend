@@ -56,7 +56,7 @@ SETUP = [
            rc.win_probability, rc.rd_before, ct.competition_id, fa.gender,
            rc.rating_before, rc.rating_after, o.rating_before as opponent_rating,
            rc.rating_before - s.rd_factor * rc.rd_before as score_before,
-           cm.rank_name, ct.round_name, coalesce(ct.golden_score, false) as golden_score,
+           cm.rank_name, ct.round_name, ct.stage, coalesce(ct.golden_score, false) as golden_score,
            ct.duration,
            rc.fought_on - (extract(dow from rc.fought_on)::int
                            + case when extract(dow from rc.fought_on) = 0 then 7 else 0 end)
@@ -387,7 +387,7 @@ RECORDS = {
     "longest_contest": f"""
         select rank() over (order by seconds desc), athlete_id, opponent_id, null::int,
                competition_id, weight, seconds,
-               jsonb_build_object('contest', contest_id, 'round', round_name), fought_on
+               jsonb_build_object('contest', contest_id, 'round', stage), fought_on
         from (
             select *, extract(epoch from cast(duration as interval)) as seconds
             from fight

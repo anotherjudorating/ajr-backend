@@ -66,6 +66,8 @@ def run_rating(
 ) -> RatingRun:
     """python -m ajr.rating writes the outcome for the update workflow."""
     with Session(engine) as session:
+        # every contest's stage of the draw (new contests from the sync)
+        session.execute(text("select ajr.fill_stages()"))
         corrected = 0
         rated_from = date.min  # the places on the days of the peaks: all again
         if needs_full_run(session, params, ranking):

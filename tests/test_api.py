@@ -137,7 +137,7 @@ def test_athlete_history_latest_first():
 
     rows = call("select * from api.athlete_history(1)")
 
-    assert [row["round"] for row in rows] == ["Final", "Semi-Final"]
+    assert [row["round"] for row in rows] == ["F", "1/2"]  # stages, from the final
     final = rows[0]
     assert (final["opponent_id"], final["opponent_family_name"], final["won"]) == (3, "NAME3", True)
     assert final["competition"] == "Grand Slam"
@@ -302,7 +302,7 @@ def test_athlete_history_results_of_other_rounds():
 
     [semi] = call("select * from api.athlete_history(2)")
 
-    assert semi["result"] == "Semi-Final"  # the round 2 lost in
+    assert semi["result"] == "1/2"  # the stage lost in
 
 
 def test_previous_functions_for_downgrade_load():
@@ -424,7 +424,7 @@ def test_contest():
 
     assert (contest["competition"], contest["round"], contest["weight"]) == (
         "Grand Slam",
-        "Final",
+        "F",
         "-73",
     )
     assert (contest["blue_id"], contest["white_id"], contest["winner_id"]) == (1, 3, 1)
