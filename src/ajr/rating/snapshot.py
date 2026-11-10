@@ -417,7 +417,7 @@ HISTORY_FACTS = text("""
            opponent_country = f.ioc, result = f.result
       from (
           select rc.contest_id, rc.athlete_id,
-                 ct.competition_id, ct.round, ct.fight_no, ct.stage as round_name,
+                 ct.competition_id, ct.round, ct.fight_no, ct.round_name,
                  orc.rating_before as opponent_rating_before,
                  orc.rd_before as opponent_rd_before,
                  o.family_name, o.given_name, co.ioc, r.result
