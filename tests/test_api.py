@@ -113,6 +113,8 @@ def test_athlete():
 
     assert (athlete["id"], athlete["family_name"], athlete["country"]) == (1, "NAME1", "JPN")
     assert (athlete["weight"], athlete["place"], athlete["contests"]) == ("-73", 1, 2)
+    # every table listing them today, with the place there
+    assert [(t["weight"], t["place"]) for t in athlete["tables"]] == [("-73", 1)]
 
 
 def test_hidden_athlete_has_no_place():
@@ -122,6 +124,7 @@ def test_hidden_athlete_has_no_place():
 
     assert athlete["place"] is None
     assert athlete["rating"] is not None
+    assert athlete["tables"] == []
 
 
 def test_athlete_history_latest_first():
