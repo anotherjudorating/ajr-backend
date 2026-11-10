@@ -11,6 +11,8 @@ Layout of the bucket:
     v/<version>/rankings/<slug>/<YYYY>/<YYYY-MM-DD>[.g<n>].json   (Mondays)
     v/<version>/p4p/<men|women>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
     v/<version>/teams/<men|women|mixed>/<YYYY>/<YYYY-MM-DD>[.g<n>].json
+    v/<version>/places/<athlete_id>.json                  an athlete's place every week
+    v/<version>/places-state.json                         every athlete's, for the next run
     archive/<version>/rating_history.csv.gz, athletes.csv.gz, competitions.csv.gz, README.md
 
 <version> is a hash of the rating settings: a new formula is written under a new
@@ -21,6 +23,12 @@ files are cached for a year at the edge, so a day computed again in the same ver
 (results corrected back in time) gets a new name: the manifest's `generations` say
 from which day on which generation holds (`.g<n>`, none for 0). Each file holds
 exactly what api.leaderboard / api.p4p / api.teams answer for that day.
+
+An athlete's places (in their weight's table and pound for pound, every Monday) are
+one small file per athlete, for the site's rating chart: the weeks the run computes
+replace the ones they cover in the state of the last run (places-state.json), and only
+the files that changed are uploaded. They change every week, so the site asks for them
+with the manifest's last day in the query (?w=…): a new week, a new address.
 
 The update job runs `python -m ajr.tables publish` after the publish to production:
 the rating job marks from which day the tables are stale (ajr.tables_export.pending_from),
@@ -54,6 +62,7 @@ OLD_VERSION_GRACE = timedelta(hours=1)  # the site caches the manifest ~10 minut
 IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_CACHE = "public, max-age=300, must-revalidate"
 ARCHIVE_CACHE = "public, max-age=3600"
+PLACES_CACHE = "public, max-age=31536000"  # asked for with ?w=<last day>: see above
 ARCHIVE_KEEP = timedelta(days=90)  # an old version's archive, after a new formula
 LICENSE = "https://creativecommons.org/licenses/by/4.0/"  # CC BY 4.0, the archive's
 CONTACT = "data@anotherjudorating.com"
@@ -168,6 +177,73 @@ def day_tables(connection: Connection, day: date) -> list[tuple[str, str, list[d
     return out
 
 
+def place_key(version: str, athlete_id: int | str) -> str:
+    return f"v/{version}/places/{athlete_id}.json"
+
+
+def places_state_key(version: str) -> str:
+    return f"v/{version}/places-state.json"
+
+
+# A week of an athlete, packed into one number for the state: the place in the weight's
+# table, the place pound for pound (0 outside it) and the weight's index in WEIGHTS; 0
+# for a week outside every table.
+def pack(place: int, p4p: int | None, weight: int) -> int:
+    return place * 1024 + (p4p or 0) * 16 + weight
+
+
+def unpack(code: int) -> list | None:
+    if not code:
+        return None
+    return [code // 1024, WEIGHTS[code % 16], (code // 16) % 64 or None]
+
+
+def week_places(tables: list[tuple[str, str, list[dict]]]) -> dict[int, int]:
+    """A day's packed week of every athlete in its tables (day_tables)."""
+    weights = {slug(w): i for i, w in enumerate(WEIGHTS)}
+    p4p = {row["athlete_id"]: row["place"] for t, _, rows in tables if t == "p4p" for row in rows}
+    out: dict[int, int] = {}
+    for table, name, rows in tables:
+        if table != "rankings":
+            continue
+        for row in rows:
+            aid = row["athlete_id"]
+            code = pack(row["place"], p4p.get(aid), weights[name])
+            # listed in one table; if ever in two, the better place
+            if aid not in out or code < out[aid]:
+                out[aid] = code
+    return out
+
+
+def merge_places(state: dict, start: int, new: list[dict[int, int]]) -> dict:
+    """The state ({athlete: [first week, codes…]}, weeks counted from FIRST_DAY) with
+    the weeks from index `start` on replaced by `new` (one dict a week)."""
+    out: dict[str, list[int]] = {}
+    for aid, (first, *codes) in state.items():
+        kept = codes[: max(0, start - first)]
+        if kept:
+            out[aid] = [first, *kept]
+    for offset, week in enumerate(new):
+        index = start + offset
+        for aid, code in week.items():
+            key = str(aid)
+            entry = out.setdefault(key, [index])
+            entry.extend([0] * (index - entry[0] - (len(entry) - 1)))
+            entry.append(code)
+    for entry in out.values():
+        while len(entry) > 1 and entry[-1] == 0:
+            entry.pop()
+    return out
+
+
+def place_document(entry: list[int]) -> dict:
+    """An athlete's file: their first week, then a week a row (place, weight, place
+    pound for pound; null outside every table)."""
+    first, *codes = entry
+    return {"format": FORMAT, "from": (FIRST_DAY + timedelta(weeks=first)).isoformat(),
+            "weeks": [unpack(c) for c in codes]}  # fmt: skip
+
+
 def encode(document: dict) -> bytes:
     text = json.dumps(document, separators=(",", ":"), default=str, ensure_ascii=False)
     return gzip.compress(text.encode(), compresslevel=9, mtime=0)
@@ -220,6 +296,12 @@ class Bucket:
         for future in self.pending:
             future.result()
         self.pending = []
+
+    def get(self, key: str) -> bytes | None:
+        try:
+            return self.s3.get_object(Bucket=self.name, Key=key)["Body"].read()
+        except self.s3.exceptions.NoSuchKey:
+            return None
 
     def manifest(self) -> dict | None:
         try:
@@ -399,14 +481,42 @@ def publish(
     connection.execute("set jit = off")
     connection.execute("set work_mem = '64MB'")
 
+    weeks: list[dict[int, int]] = []
     for day in plan.days:
-        for table, name, rows in day_tables(connection, day):
+        computed = day_tables(connection, day)
+        for table, name, rows in computed:
             document = {"format": FORMAT, "table": table, "key": name, "day": day.isoformat(),
                         "version": current, "rows": rows}  # fmt: skip
             key = day_key(current, table, name, day, plan.generation)
             bucket.put(key, encode(document), "application/json", IMMUTABLE, gzipped=True)
+        weeks.append(week_places(computed))
         if len(bucket.pending) > 2000:
             bucket.wait()
+
+    # the athletes' places: the computed weeks over the last run's, only changed files up
+    if plan.days:
+        old: dict = {}
+        if not plan.full:
+            body = bucket.get(places_state_key(current))
+            old = json.loads(gzip.decompress(body)) if body else {}
+        start = (plan.days[0] - FIRST_DAY).days // 7
+        if not old and not plan.full and start > 0:
+            # no state yet (the first run with places): the weeks before, places only
+            before = days_between(FIRST_DAY, plan.days[0] - timedelta(days=1))
+            weeks = [week_places(day_tables(connection, day)) for day in before] + weeks
+            start = 0
+        places = merge_places(old, start, weeks)
+        # an athlete no longer in any computed table keeps a file, with no weeks
+        for aid, entry in {**{a: [0] for a in old if a not in places}, **places}.items():
+            if old.get(aid) != entry:
+                empty = {"format": FORMAT, "weeks": []}
+                document = place_document(entry) if len(entry) > 1 else empty
+                bucket.put(place_key(current, aid), encode(document), "application/json",
+                           PLACES_CACHE, gzipped=True)  # fmt: skip
+            if len(bucket.pending) > 2000:
+                bucket.wait()
+        bucket.put(places_state_key(current), encode(places), "application/json", "no-store",
+                   gzipped=True)  # fmt: skip
 
     archive = dict((manifest or {}).get("archive", {})) if not plan.full else {}
     if plan.days or plan.full:
