@@ -95,10 +95,14 @@ def test_country_leaders():
 
     rows = call("select * from api.country_leaders('JPN')")
 
-    assert [row["weight"] for row in rows] == ["-73", "-81"]  # the site's order
+    weights = [row["weight"] for row in rows]
+    assert list(dict.fromkeys(weights)) == ["-73", "-81"]  # the site's order
     leader_73 = call("select * from api.leaderboard('-73')")[0]
     assert (rows[0]["athlete_id"], rows[0]["place"]) == (leader_73["athlete_id"], 1)
     assert rows[0]["score"] == leader_73["score"]
+    for weight in ("-73", "-81"):  # the nation's best first, at most five
+        scores = [row["score"] for row in rows if row["weight"] == weight]
+        assert scores == sorted(scores, reverse=True) and 1 <= len(scores) <= 5
 
 
 def test_country_history():
