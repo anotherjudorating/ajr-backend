@@ -73,9 +73,10 @@ def test_the_job_keeps_how_each_athlete_did():
 
 
 def without_rank(rows: list[dict]) -> list[dict]:
-    """athlete_history's rows less the tournament's level (the medal table's; the
-    contest page does not show it)."""
-    return [{k: v for k, v in r.items() if k != "competition_rank"} for r in rows]
+    """athlete_history's rows less the tournament's level and country (the results'
+    table's; the contest page does not show them)."""
+    return [{k: v for k, v in r.items() if k not in ("competition_rank", "competition_country")}
+            for r in rows]  # fmt: skip
 
 
 def test_contest_context_is_what_the_contest_page_shows():
