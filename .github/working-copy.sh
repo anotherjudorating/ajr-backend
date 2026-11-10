@@ -15,6 +15,11 @@ restore)
   else
     echo "No copy: a new one from production"
     uv run alembic upgrade head
+    # the rows some migrations seed (ajr.tables_export's) would clash with production's
+    docker exec db psql -U postgres -v ON_ERROR_STOP=1 -q -c "do \$\$ declare t text; begin
+      select string_agg(format('%I.%I', schemaname, tablename), ', ') into t
+      from pg_tables where schemaname = 'ajr' and tablename <> 'alembic_version';
+      execute 'truncate ' || t; end \$\$"
     url="${PRODUCTION_DATABASE_URL/postgresql+psycopg:/postgresql:}"
     echo "::add-mask::$url"
     docker exec db pg_dump "$url" --format=custom --data-only --schema=ajr \
