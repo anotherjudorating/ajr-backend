@@ -88,9 +88,17 @@ ATHLETE_SUMMARY = text("""
         ) w
         group by athlete_id
     ),
-    -- the best score at the end of a day of contests (the earliest such day)
+    -- the best score at the end of a day of contests (the earliest such day), in the
+    -- table that listed the athlete that day: the weight fought in, or, after a try-on
+    -- of another weight (not listed there), the one they stood in (the site links the
+    -- peak to that table)
     peaks as (
-        select distinct on (rc.athlete_id) rc.athlete_id, rc.fought_on, rc.weight,
+        select distinct on (rc.athlete_id) rc.athlete_id, rc.fought_on,
+               case when rc.listed_here then rc.weight
+                    else coalesce((select min(l.weight) from ajr.rating_listing l
+                                   where l.contest_id = rc.contest_id
+                                     and l.athlete_id = rc.athlete_id), rc.weight)
+               end as weight,
                round(rc.rating_after - s.rd_factor * rc.rd_after) as score
         from ajr.rating_change rc
         cross join ajr.rating_settings s
