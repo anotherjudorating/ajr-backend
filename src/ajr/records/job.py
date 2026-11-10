@@ -77,10 +77,12 @@ def run_records(today: date | None = None) -> None:
         session.execute(delete(Record))
         for name, query in RECORDS.items():
             # a nation's or tournament's record also for each gender (BY_GENDER)
-            for gender in (None, "male", "female") if name in BY_GENDER else (None,):
-                sql = INSERT.format(query=scoped(query, gender))
-                result = connection.execute(text(sql), {"record": name, "gender": gender})
-                logger.info("%s %s: %d rows", name, gender or "all", result.rowcount)
+            # the scope of the rows: both genders (None), or men's or women's only
+            scopes = (None, "male", "female") if name in BY_GENDER else (None,)
+            for scope in scopes:
+                sql = INSERT.format(query=scoped(query, scope))
+                result = connection.execute(text(sql), {"record": name, "gender": scope})
+                logger.info("%s (%s): %d rows", name, scope or "all", result.rowcount)
         for name, rows in weekly.items():
             session.add_all(Record(record=name, **row) for row in rows)
             logger.info("%s: %d rows", name, len(rows))
