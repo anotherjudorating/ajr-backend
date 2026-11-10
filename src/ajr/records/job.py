@@ -16,15 +16,15 @@ from sqlmodel import Session
 from ajr.core.db import engine
 from ajr.core.models import Record
 from ajr.rating.job import PARAMS, RANKING
-from ajr.records.queries import RECORDS, SETUP
+from ajr.records.queries import BY_GENDER, RECORDS, SETUP, scoped
 from ajr.records.weekly import weekly_records
 
 logger = logging.getLogger(__name__)
 
 INSERT = """
     insert into ajr.record (record, place, athlete_id, opponent_id, country_id,
-                            competition_id, weight, value, detail, day)
-    select :record, * from ({query}) best
+                            competition_id, weight, value, detail, day, gender)
+    select :record, best.*, cast(:gender as text) from ({query}) best
 """
 
 
@@ -34,7 +34,7 @@ NAMES = """
     update ajr.record r
     set family_name = a.family_name,
         given_name = a.given_name,
-        gender = a.gender,
+        gender = coalesce(a.gender, named.gender), -- a nation's or tournament's: its rows' own
         opponent_family_name = o.family_name,
         opponent_given_name = o.given_name,
         opponent_country = oc.ioc,
@@ -76,8 +76,11 @@ def run_records(today: date | None = None) -> None:
             connection.execute(text(statement))
         session.execute(delete(Record))
         for name, query in RECORDS.items():
-            result = connection.execute(text(INSERT.format(query=query)), {"record": name})
-            logger.info("%s: %d rows", name, result.rowcount)
+            # a nation's or tournament's record also for each gender (BY_GENDER)
+            for gender in (None, "male", "female") if name in BY_GENDER else (None,):
+                sql = INSERT.format(query=scoped(query, gender))
+                result = connection.execute(text(sql), {"record": name, "gender": gender})
+                logger.info("%s %s: %d rows", name, gender or "all", result.rowcount)
         for name, rows in weekly.items():
             session.add_all(Record(record=name, **row) for row in rows)
             logger.info("%s: %d rows", name, len(rows))
