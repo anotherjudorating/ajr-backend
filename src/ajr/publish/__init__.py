@@ -16,7 +16,8 @@ or `published` does not have it yet) is sent whole: every row, and production de
 the rows the working copy does not have.
 
 Every table of our schema is published, except the ones production writes itself
-(NOT_PUBLISHED). Rows go through binary COPY, so values arrive exactly as computed.
+and the working copy's own (NOT_PUBLISHED). Rows go through binary COPY, so values
+arrive exactly as computed.
 """
 
 import logging
@@ -32,6 +33,10 @@ PUBLISHED = "published"
 NOT_PUBLISHED = {
     "alembic_version",  # migrations run on each database
     "matchup_views",  # counted by the site's visitors
+    # the working copy's own: the records job's weekly nations ranking, which the
+    # rating's snapshot reads (a nation's 90 days and 6 months) and the tables job
+    # puts in R2 for the country page (ajr/tables)
+    "nation_history",
 }
 # Published, but not what the site's pages show: a change to them alone does not
 # make the site refresh its cache (every run logs itself in job_run; the site only

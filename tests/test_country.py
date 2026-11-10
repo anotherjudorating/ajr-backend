@@ -1,6 +1,6 @@
-"""The country page (api.country, api.country_leaders, api.country_history,
-api.country_tournaments), the nations rankings behind it and the contests
-before a tournament."""
+"""The country page (api.country, api.country_leaders, api.country_tournaments, the
+nation's weeks the tables job puts in R2), the nations rankings behind it and the
+contests before a tournament."""
 
 from datetime import date, timedelta
 
@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text, update
 from sqlmodel import Session
 
+import ajr.tables as tables
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Country
 from ajr.records import weekly
@@ -105,14 +106,16 @@ def test_country_leaders():
         assert scores == sorted(scores, reverse=True) and 1 <= len(scores) <= 5
 
 
-def test_country_history():
+def test_nation_documents():
     prepare()
     add_history((TODAY - timedelta(days=7), 1, 1, 1600), (TODAY - timedelta(days=14), 1, 2, 1500),
                 (TODAY - timedelta(days=7), 2, 2, 1400))  # fmt: skip
 
-    rows = call("select * from api.country_history('JPN')")
+    with engine.connect() as connection:
+        documents = tables.nation_documents(connection.connection.driver_connection)
 
-    assert [(row["place"], row["rating"]) for row in rows] == [(2, 1500), (1, 1600)]
+    assert [week[1:] for week in documents["JPN"]["weeks"]] == [[2, 1500], [1, 1600]]
+    assert documents["FRA"]["weeks"] == [[(TODAY - timedelta(days=7)).isoformat(), 2, 1400]]
 
 
 def test_country_tournaments():
@@ -159,4 +162,5 @@ def test_records_job_replaces_the_nation_history():
     run_records()
 
     # the test tables are too thin for team ratings: nothing comes back
-    assert call("select * from api.country_history('JPN')") == []
+    with engine.connect() as connection:
+        assert connection.execute(text("select count(*) from ajr.nation_history")).scalar() == 0
