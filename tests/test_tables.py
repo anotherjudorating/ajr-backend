@@ -284,3 +284,26 @@ def test_places_never_written_come_on_a_run_with_no_day(monkeypatch):
     assert result.plan.days == []
     assert tables.places_state_key(version) in bucket.objects
     assert any(k.startswith(f"places/{version}/athletes/") for k in bucket.objects)
+
+
+def test_an_upload_r2_finds_busy_is_tried_again(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    busy = {
+        "Error": {"Code": "ServiceUnavailable", "Message": "Reduce your concurrent request rate"}
+    }
+    calls = []
+
+    class S3:
+        def put_object(self, **request):
+            calls.append(request["Key"])
+            if len(calls) < 3:
+                raise ClientError(busy, "PutObject")
+
+    bucket = object.__new__(tables.Bucket)
+    bucket.s3 = S3()
+    monkeypatch.setattr(tables.time, "sleep", lambda seconds: None)
+
+    bucket.put_now(Bucket="b", Key="places/v/athletes/1.json", Body=b"")
+
+    assert calls == ["places/v/athletes/1.json"] * 3

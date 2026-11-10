@@ -48,6 +48,7 @@ import io
 import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -68,6 +69,7 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_CACHE = "public, max-age=300, must-revalidate"
 ARCHIVE_CACHE = "public, max-age=3600"
 PLACES_CACHE = "public, max-age=3600"  # they change every week: see above
+PUT_TRIES = 6  # an upload R2 finds busy: tried again after 2, 4 … 10 s (Bucket.put_now)
 ARCHIVE_KEEP = timedelta(days=90)  # an old version's archive, after a new formula
 LICENSE = "https://creativecommons.org/licenses/by/4.0/"  # CC BY 4.0, the archive's
 CONTACT = "data@anotherjudorating.com"
@@ -317,7 +319,7 @@ class Bucket:
         extra = {"ContentEncoding": "gzip"} if gzipped else {}
         self.pending.append(
             self.pool.submit(
-                self.s3.put_object,
+                self.put_now,
                 Bucket=self.name,
                 Key=key,
                 Body=body,
@@ -328,6 +330,26 @@ class Bucket:
         )
         self.uploaded += 1
         self.bytes += len(body)
+
+    def put_now(self, **request) -> None:
+        """One upload, tried again for a while on R2's "Reduce your concurrent request
+        rate for the same object" (503): under a full rewrite's load an upload slow to
+        answer is sent again by botocore while the first is still being written, and
+        its own retries come too fast to clear it."""
+        from botocore.exceptions import ClientError
+
+        for attempt in range(PUT_TRIES):
+            try:
+                self.s3.put_object(**request)
+                return
+            except ClientError as error:
+                busy = error.response.get("Error", {}).get("Code") in (
+                    "ServiceUnavailable",
+                    "SlowDown",
+                )
+                if not busy or attempt == PUT_TRIES - 1:
+                    raise
+                time.sleep(2 * (attempt + 1))
 
     def wait(self) -> None:
         """Every upload so far has succeeded (or raise)."""
