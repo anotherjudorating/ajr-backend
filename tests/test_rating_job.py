@@ -763,4 +763,4 @@ def test_stages_count_from_the_final():
 
     assert [stages[600 + i] for i in range(len(rounds))] == [
         "1/8", "1/64", "1/4", "1/2", "F", "BR", "REP", "1/8", "1/16", "R3", "R1", "R2", None,
-    ]
+    ]  # fmt: skip

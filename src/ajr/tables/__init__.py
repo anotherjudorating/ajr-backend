@@ -365,7 +365,7 @@ COLUMNS = {
         "volatility_after": "the volatility after the contest",
         "competition_id": "the tournament's judobase id (competitions.csv.gz)",
         "round_name": "the stage of the draw, from the final: F, 1/2 (semi-final), 1/4, 1/8 …"
-    " 1/128; BR (bronze), REP (repechage); R1, R2… a tour of a round robin or of pools",
+        " 1/128; BR (bronze), REP (repechage); R1, R2… a tour of a round robin or of pools",
     },
     "athletes.csv.gz": {
         "id": "the athlete's judobase id",
