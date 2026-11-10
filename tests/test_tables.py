@@ -44,6 +44,9 @@ class MemoryBucket(tables.Bucket):
     def wait(self) -> None:
         pass
 
+    def get(self, key):
+        return self.objects.get(key)
+
     def manifest(self):
         self.requests += 1
         body = self.objects.get("manifest.json")
@@ -186,3 +189,51 @@ def test_an_old_formulas_archive_stays_90_days(monkeypatch):
     assert [a["version"] for a in manifest["old_archives"]] == ["old"]
     assert "archive/old/rating_history.csv.gz" in bucket.objects
     assert "archive/older/rating_history.csv.gz" not in bucket.objects
+
+
+def test_publish_writes_every_athletes_places_and_a_week_later_only_whats_new(monkeypatch):
+    add_data()
+    run_rating()
+    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
+    bucket = MemoryBucket()
+
+    with connection() as c:
+        tables.publish(c, bucket, today=TODAY)
+
+    version = json.loads(bucket.objects["manifest.json"])["version"]
+    mondays = tables.days_between(tables.FIRST_DAY, TODAY - timedelta(days=1))
+    with connection() as c:
+        query = "select athlete_id, place from api.leaderboard('-73', %s)"
+        listed = c.execute(query, [mondays[-1]]).fetchall()
+    assert listed
+    for athlete_id, place in listed:
+        body = bucket.objects[tables.place_key(version, athlete_id)]
+        document = json.loads(gzip.decompress(body))
+        first = date.fromisoformat(document["from"])
+        week = document["weeks"][(mondays[-1] - first).days // 7]
+        assert week[0] == place and week[1] == "-73"
+
+    # a week later: the new Monday added to the state, unchanged athletes not uploaded again
+    with engine.begin() as c:
+        c.execute(text("update ajr.tables_export set pending_from = null"))
+    before = dict(bucket.objects)
+    with connection() as c:
+        result = tables.publish(c, bucket, today=TODAY + timedelta(days=7))
+    assert len(result.plan.days) == 1
+    state = json.loads(gzip.decompress(bucket.objects[tables.places_state_key(version)]))
+    athlete_id = str(listed[0][0])
+    assert len(state[athlete_id]) - 1 == len(mondays) + 1  # every week, the new one too
+    changed = [k for k in bucket.objects if "/places/" in k and before.get(k) != bucket.objects[k]]
+    assert set(changed) <= {tables.place_key(version, a) for a in state}
+
+
+def test_merge_places_replaces_the_weeks_from_start_and_trims_absent_ones():
+    state = {"1": [0, 1024, 2048, 3072], "2": [2, 5000]}
+
+    merged = tables.merge_places(state, 2, [{1: 9999}, {}, {3: 4096}])
+
+    assert merged["1"] == [0, 1024, 2048, 9999]  # week 2 replaced, the empty weeks trimmed
+    assert "2" not in merged  # only weeks from 2 on, none now
+    assert merged["3"] == [4, 4096]
+    assert tables.unpack(tables.pack(12, 3, 2)) == [12, "-73", 3]
+    assert tables.unpack(tables.pack(40, None, 13)) == [40, "+78", None]
