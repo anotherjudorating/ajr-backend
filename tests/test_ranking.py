@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from ajr.rating.engine import RatingParams
-from ajr.rating.ranking import AthleteState, RankingParams, leaderboards, standing
+from ajr.rating.ranking import AthleteState, RankingParams, leaderboards, listed_weights, standing
 
 PARAMS = RatingParams()
 RANKING = RankingParams()
@@ -51,3 +51,33 @@ def test_leaderboards_by_weight_best_first():
     assert [place.athlete_id for place in tables["-73"]] == [2, 1]
     assert [place.athlete_id for place in tables["-81"]] == [3]
     assert tables["+100"] == []
+
+
+def test_with_no_regular_weight_the_latest_majors_one():
+    # Grigalashvili in 2025-26: Europeans and Worlds at -81, one Grand Prix a year at -90
+    fought = [
+        (date(2025, 4, 23), 1, "-81", True),
+        (date(2025, 6, 13), 2, "-81", True),
+        (date(2026, 3, 6), 3, "-90", False),
+    ]
+    day = date(2026, 3, 6)
+
+    assert listed_weights(fought, day, "-90", RankingParams()) == {"-81"}
+    # before the rule: the latest contest's weight
+    assert listed_weights(fought, day, "-90", RankingParams(listing_majors=False)) == {"-90"}
+
+
+def test_with_no_regular_weight_nor_a_major_the_weight_of_most_tournaments():
+    fought = [
+        (date(2026, 1, 10), 1, "-73", False),
+        (date(2026, 2, 10), 2, "-73", False),
+        (date(2026, 3, 10), 3, "-81", False),
+    ]
+    assert listed_weights(fought, date(2026, 3, 10), "-81", RankingParams()) == {"-73"}
+    # of equals, the one fought in last
+    assert listed_weights(fought[1:], date(2026, 3, 10), "-81", RankingParams()) == {"-81"}
+
+
+def test_two_regular_weights_list_both():
+    fought = [(date(2026, 1, d), d, w, False) for d in (1, 2, 3) for w in ("-73", "-81")]
+    assert listed_weights(fought, date(2026, 1, 3), "-81", RankingParams()) == {"-73", "-81"}

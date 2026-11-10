@@ -11,9 +11,11 @@ years. So, like FIDE: after `hide_after_days` without contests the athlete leave
 the table until the next contest.
 
 Which weights' tables list an athlete: every weight in which they fought at least
-`min_tournaments` tournaments in the `listing_days` before their latest contest;
-when there is none, the weight of their latest contest. So an athlete who fights in
-two weights stands in both, and a try-on of another weight (or a single tournament
+`min_tournaments` tournaments in the `listing_days` before their latest contest. When
+there is none (an athlete who fights rarely), one weight: the one of their latest
+Olympics, Worlds or continental championships in those days; without one, the weight
+of most tournaments then; of equals, the one fought in last. So an athlete who fights
+in two weights stands in both, and a try-on of another weight (a single Grand Prix
 there) leaves them in their own. Open-category contests count for no weight.
 
 The site gets the same table from the database function ajr.board_at (see the
@@ -38,6 +40,9 @@ class RankingParams:
     hide_after_days: int | None = 365
     min_tournaments: int = 3  # in a weight within listing_days, to stand in its table
     listing_days: int = 365
+    # with no weight of min_tournaments: the latest major's weight, else the weight of
+    # most tournaments (False: the latest contest's, as before 2026-11-11)
+    listing_majors: bool = True
 
 
 @dataclass(frozen=True)
@@ -53,7 +58,7 @@ class AthleteState:
     tournaments: tuple[tuple[date, int | None, str], ...] = field(default=(), compare=False)
 
 
-Tournament = tuple[date, int | None, str]  # (day, competition, weight)
+Tournament = tuple[date, int | None, str, bool]  # (day, competition, weight, major)
 
 
 def listed_weights(
@@ -65,14 +70,22 @@ def listed_weights(
     """The weights whose tables list the athlete after their contest on `day` (see the
     module's docstring); `weight`: their latest contest's category."""
     since = day - timedelta(days=ranking_params.listing_days)
+    window = [t for t in tournaments if since < t[0] <= day]
     competitions: dict[str, set] = {}
-    for fought_on, competition_id, fought_in in tournaments:
-        if since < fought_on <= day:
-            competitions.setdefault(fought_in, set()).add(competition_id)
+    for _, competition_id, fought_in, _ in window:
+        competitions.setdefault(fought_in, set()).add(competition_id)
     listed = frozenset(
         w for w, c in competitions.items() if len(c) >= ranking_params.min_tournaments
     )
-    return listed or (frozenset([weight]) if weight else frozenset())
+    if listed:
+        return listed
+    if ranking_params.listing_majors and window:
+        majors = [t for t in window if t[3]]
+        if majors:
+            return frozenset([max(majors, key=lambda t: t[0])[2]])
+        last = {w: max(t[0] for t in window if t[2] == w) for w in competitions}
+        return frozenset([max(competitions, key=lambda w: (len(competitions[w]), last[w]))])
+    return frozenset([weight]) if weight else frozenset()
 
 
 def recent(
@@ -130,7 +143,7 @@ def update_states(
         before = states.get(athlete_id)
         tournaments = recent(before.tournaments, contest.day, ranking_params) if before else ()
         if weight is not None:
-            tournaments += ((contest.day, contest.competition_id, weight),)
+            tournaments += ((contest.day, contest.competition_id, weight, contest.major),)
         else:
             weight = before.weight if before else None
         if weight is not None:

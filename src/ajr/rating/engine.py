@@ -54,6 +54,9 @@ class ContestRecord:
     bye: bool
     walkover: bool  # the contest lasted 0:00
     competition_id: int | None = None  # for the tables: tournaments fought in a weight
+    # an Olympics, Worlds or continental championships: for the tables, the weight an
+    # athlete with no regular weight stands in (ajr/rating/ranking.py)
+    major: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,7 +86,9 @@ CONTESTS_QUERY = text("""
            ct.weight,
            ct.blue_id, ct.white_id, ct.winner_id = ct.blue_id as blue_won,
            coalesce(ct.bye, false) as bye, ct.duration = '00:00:00' as walkover,
-           ct.competition_id
+           ct.competition_id,
+           coalesce(cm.rank_name = 'Olympic Games' or cm.rank_name like '%Championships', false)
+               as major
     from ajr.contest ct
     join ajr.competition cm on cm.id = ct.competition_id
     where ct.winner_id is not null and ct.blue_id is not null and ct.white_id is not null

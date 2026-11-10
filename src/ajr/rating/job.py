@@ -223,6 +223,7 @@ def settings(params: RatingParams, ranking: RankingParams) -> RatingSettings:
         hide_after_days=ranking.hide_after_days,
         min_tournaments=ranking.min_tournaments,
         listing_days=ranking.listing_days,
+        listing_majors=ranking.listing_majors,
     )
 
 
@@ -327,9 +328,12 @@ LAST_WEIGHT_BEFORE_QUERY = text("""
 # Each athlete's tournaments in a weight category within listing_days before those
 # (which tables list them: ajr/rating/ranking.py).
 TOURNAMENTS_BEFORE_QUERY = text("""
-    select rc.athlete_id, rc.fought_on, ct.competition_id, ct.weight
+    select rc.athlete_id, rc.fought_on, ct.competition_id, ct.weight,
+           coalesce(cm.rank_name = 'Olympic Games' or cm.rank_name like '%Championships', false)
+               as major
     from ajr.rating_change rc
     join ajr.contest ct on ct.id = rc.contest_id
+    join ajr.competition cm on cm.id = ct.competition_id
     where rc.seq < :first_seq and rc.fought_on > cast(:since as date) - :days
       and ct.weight = any(cast(:weights as text[]))
     order by rc.seq
@@ -366,7 +370,7 @@ def rate_since(session: Session, since: date, params: RatingParams, ranking: Ran
         {"first_seq": first_seq, "since": since, "days": ranking.listing_days, "weights": WEIGHTS},
     ):
         tournaments[row.athlete_id] = tournaments.get(row.athlete_id, ()) + (
-            (row.fought_on, row.competition_id, row.weight),
+            (row.fought_on, row.competition_id, row.weight, row.major),
         )
     contests = load_contests(connection, since, real_fights_only=params.real_fights_only)
     # Stand-ins for the latest rows before: they carry the weight category, and
@@ -428,7 +432,7 @@ def rating_change_rows(
                 weight = previous_row["weight"]  # an open-weight contest keeps the category
             fought = recent(recent_tournaments.get(athlete_id, ()), contest.day, ranking)
             if contest.weight in WEIGHTS:
-                fought += ((contest.day, contest.competition_id, contest.weight),)
+                fought += ((contest.day, contest.competition_id, contest.weight, contest.major),)
             recent_tournaments[athlete_id] = fought
             listed = listed_weights(fought, contest.day, weight, ranking)
             row = {

@@ -271,6 +271,7 @@ class RatingSettings(SQLModel, table=True):
     hide_after_days: int | None  # not in the table after this many days without contests
     min_tournaments: int  # in a weight within listing_days, to stand in its table
     listing_days: int
+    listing_majors: bool | None  # the fallback weight by the majors (ajr/rating/ranking.py)
 
 
 class WrlRanking(SQLModel, table=True):
