@@ -585,7 +585,7 @@ def test_history_rows_carry_their_facts():
 
     rows = changes()
     row = rows[(101, 1)]
-    assert (row.competition_id, row.round, row.fight_no, row.round_name) == (10, 0, 7, "F")
+    assert (row.competition_id, row.round, row.fight_no, row.round_name) == (10, 0, 7, "Final")
     assert row.opponent_rating_before == rows[(101, 2)].rating_before
     assert row.opponent_rd_before == rows[(101, 2)].rd_before
     assert (row.opponent_family_name, row.opponent_country) == ("A2", "JPN")
