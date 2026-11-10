@@ -37,12 +37,14 @@ NAMES = """
         gender = a.gender,
         opponent_family_name = o.family_name,
         opponent_given_name = o.given_name,
+        opponent_country = oc.ioc,
         country = co.ioc,
         country_name = co.name,
         competition = cm.name
     from ajr.record named
     left join ajr.athlete a on a.id = named.athlete_id
     left join ajr.athlete o on o.id = named.opponent_id
+    left join ajr.country oc on oc.id = o.country_id
     left join ajr.country co on co.id = coalesce(named.country_id, a.country_id)
     left join ajr.competition cm on cm.id = named.competition_id
     where named.id = r.id
