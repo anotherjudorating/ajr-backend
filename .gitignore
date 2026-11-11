@@ -232,3 +232,7 @@ __marimo__/
 
 # the update job's working copy (.github/working-copy.sh)
 *.dump
+
+# benchmark: the raw answers of fetch_wrl_history.py (the archive itself is kept)
+benchmark/data/wrl_raw.jsonl
+benchmark/data/wrl_done.txt
