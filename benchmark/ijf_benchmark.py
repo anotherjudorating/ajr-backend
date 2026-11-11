@@ -37,6 +37,7 @@ import argparse
 import bisect
 import csv
 import gzip
+import io
 import json
 import math
 import os
@@ -47,7 +48,8 @@ from datetime import date
 
 from sqlalchemy import create_engine, text
 
-from ajr.rating.engine import ContestRecord, RatingParams, load_contests, run
+import ajr.rating.engine as engine_module
+from ajr.rating.engine import MEN, WOMEN, ContestRecord, RatingParams, load_contests, run
 from ajr.rating.glicko2 import SCALE, Rating, g, update
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -138,6 +140,14 @@ def elo_chances(contests) -> list[float]:
     return out
 
 
+def chance(o, shift: float) -> float:
+    """The blue side's chance from the ratings (skill - shift * RD) and both RDs."""
+    a, b = o.blue_before, o.white_before
+    phi = math.hypot(a.rd, b.rd) / SCALE
+    gap = (a.rating - shift * a.rd) - (b.rating - shift * b.rd)
+    return 1 / (1 + math.exp(-g(phi) * gap / SCALE))
+
+
 def glicko_paper_chances(contests, tau: float = 0.5) -> list[float]:
     """Glicko-2 by the paper: a rating period a calendar month."""
     state: dict[int, Rating] = {}
@@ -221,13 +231,18 @@ def binomial_two_sided(k: int, n: int) -> float:
     return min(1.0, 2 * tail)
 
 
+def gz_text(path: str):
+    """A gzip text file written without a timestamp: the same rows, the same bytes."""
+    return io.TextIOWrapper(gzip.GzipFile(path, "wb", mtime=0), newline="")
+
+
 def take_snapshot(path: str) -> None:
     """Our contests as the rating takes them, with the facts the slices need."""
     engine = create_engine(os.environ["DATABASE_URL"])
     with engine.connect() as connection:
         contests = load_contests(connection, real_fights_only=True)
         facts = {r.id: r for r in connection.execute(FACTS)}
-    with gzip.open(path, "wt", newline="") as f:
+    with gz_text(path) as f:
         w = csv.writer(f)
         w.writerow(SNAPSHOT_COLUMNS)
         for c in contests:
@@ -250,6 +265,17 @@ def take_snapshot(path: str) -> None:
                 ]
             )
     print(f"snapshot: {len(contests)} contests in {path}", flush=True)
+    # today's listed athletes with their skill and RD, for the slider's tables
+    with (
+        engine.connect() as connection,
+        gz_text(os.path.join(DATA, "tables.csv.gz")) as f,
+    ):
+        w = csv.writer(f)
+        w.writerow(["weight", "athlete_id", "name", "country", "skill", "rd"])
+        for r in connection.execute(TABLES):
+            w.writerow(
+                [r.weight, r.athlete_id, r.name, r.country, round(r.skill, 3), round(r.rd, 3)]
+            )
 
 
 def read_snapshot(path: str):
@@ -282,6 +308,144 @@ class Facts:
     date_from: date
 
 
+# The methodology's slider: the rating as skill - n * RD, n from 0 to 5. For each n, how
+# well the chance from it predicts (the test's contests) and the tables it makes (today's
+# listed athletes resorted), into data/rd_shift.json.
+SWEEP = [x / 2 for x in range(11)]
+CAL_BINS = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)]
+
+
+def sweep(outcomes, test, slices) -> None:
+    tables = defaultdict(list)
+    with gzip.open(os.path.join(DATA, "tables.csv.gz"), "rt") as f:
+        for r in csv.DictReader(f):
+            tables[r["weight"]].append(r)
+    out = {"n": SWEEP, "metrics": [], "tables": {}}
+    picked = {
+        "all": test,
+        "newcomers": slices["Experience: one side < 10 contests"],
+        "medal_rounds": slices["Medal rounds of majors (OG, Worlds, Masters, GS)"],
+    }
+    for n in SWEEP:
+        entry = {"n": n}
+        for name, sub in picked.items():
+            rows = [
+                {"p": chance(outcomes[r["i"]], n), "won": r["won"], "ijf": r["ijf"]} for r in sub
+            ]
+            m = scores(rows, "p")
+            entry[name] = {k: round(v, 5) for k, v in m.items()}
+            if name == "all":
+                cal = []
+                for lo, hi in CAL_BINS:
+                    fav = [
+                        (max(r["p"], 1 - r["p"]), (r["p"] > 0.5) == r["won"])
+                        for r in rows
+                        if r["p"] != 0.5 and lo <= max(r["p"], 1 - r["p"]) < hi
+                    ]
+                    cal.append(
+                        {
+                            "from": lo,
+                            "to": min(hi, 1.0),
+                            "n": len(fav),
+                            "promised": round(sum(p for p, _ in fav) / len(fav), 4)
+                            if fav
+                            else None,
+                            "won": round(sum(w for _, w in fav) / len(fav), 4) if fav else None,
+                        }
+                    )
+                entry["calibration"] = cal
+                split = [r for r in rows if r["ijf"] != 0.5 and (r["p"] > 0.5) != (r["ijf"] > 0.5)]
+                right = sum((r["p"] > 0.5) == r["won"] for r in split)
+                entry["against_ijf"] = {
+                    "n": len(split),
+                    "right": round(right / len(split), 4) if split else None,
+                }
+        out["metrics"].append(entry)
+    for weight, rows in tables.items():
+        out["tables"][weight] = {
+            str(n): [
+                {
+                    "athlete_id": int(r["athlete_id"]),
+                    "name": r["name"],
+                    "country": r["country"],
+                    "rating": round(float(r["skill"]) - n * float(r["rd"])),
+                }
+                for r in sorted(rows, key=lambda r: -(float(r["skill"]) - n * float(r["rd"])))[:10]
+            ]
+            for n in SWEEP
+        }
+    with open(os.path.join(DATA, "rd_shift.json"), "w") as f:
+        json.dump(out, f, separators=(",", ":"), ensure_ascii=False)
+    print(
+        "rd_shift.json:",
+        ", ".join(f"n={e['n']} {e['all']['log loss']:.4f}" for e in out["metrics"]),
+        flush=True,
+    )
+
+
+# The handicap on a change of weight, as two sliders: the share of the rating added on a
+# move up and on a move down (now -0.05 and +0.05), each from -0.25 to +0.25; the engine
+# run again for each pair, the chance from skill - 1 * RD; into data/handicap.json.
+HANDICAPS = [round(x * 0.05, 2) for x in range(-5, 6)]
+
+
+def handicap_sweep(contests, test, slices) -> None:
+    picked = {
+        "all": test,
+        "newcomers": slices["Experience: one side < 10 contests"],
+        "medal_rounds": slices["Medal rounds of majors (OG, Worlds, Masters, GS)"],
+        "after_move": slices["After a change of weight (first 5 in the new one)"],
+        "elite_up": [r for r in test if r["elite_up"]],
+        "elite_down": [r for r in test if r["elite_down"]],
+    }
+    original = engine_module.move_shift
+    grid = []
+    try:
+        for up in HANDICAPS:
+            for down in HANDICAPS:
+
+                def shift(rating, from_weight, to_weight, params, up=up, down=down):
+                    for order in (MEN, WOMEN):
+                        if from_weight in order and to_weight in order and from_weight != to_weight:
+                            higher = order.index(to_weight) > order.index(from_weight)
+                            return (up if higher else down) * rating
+                    return 0.0
+
+                engine_module.move_shift = shift
+                entry = {"up": up, "down": down}
+                try:
+                    outcomes = run(contests, RatingParams())
+                except ZeroDivisionError, OverflowError:
+                    # the shift compounds at every change: far ones run the ratings off to
+                    # where a chance is exactly 0 or 1, and Glicko's update breaks down
+                    entry["diverged"] = True
+                    grid.append(entry)
+                    print(f"handicap up {up:+.2f} down {down:+.2f}: diverged", flush=True)
+                    continue
+                for name, sub in picked.items():
+                    rows = [{"p": chance(outcomes[r["i"]], RD_SHIFT), "won": r["won"]} for r in sub]
+                    entry[name] = {
+                        "n": len(rows),
+                        **{k: round(v, 5) for k, v in scores(rows, "p").items()},
+                    }
+                grid.append(entry)
+                print(
+                    f"handicap up {up:+.2f} down {down:+.2f}: {entry['all']['log loss']:.4f}",
+                    flush=True,
+                )
+    finally:
+        engine_module.move_shift = original
+    with open(os.path.join(DATA, "handicap.json"), "w") as f:
+        json.dump({"up": HANDICAPS, "down": HANDICAPS, "grid": grid}, f, separators=(",", ":"))
+
+
+TABLES = text("""
+    select weight, athlete_id, concat_ws(' ', family_name, given_name) as name, country,
+           rating as skill, rd
+    from ajr.leaderboard_snapshot
+""")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -294,14 +458,8 @@ def main() -> None:
     contests, facts = read_snapshot(snapshot)
     print(f"contests {len(contests)}", flush=True)
 
-    def chance(o) -> float:
-        """The blue side's chance from the ratings (skill - RD_SHIFT * RD) and both RDs."""
-        a, b = o.blue_before, o.white_before
-        phi = math.hypot(a.rd, b.rd) / SCALE
-        gap = (a.rating - RD_SHIFT * a.rd) - (b.rating - RD_SHIFT * b.rd)
-        return 1 / (1 + math.exp(-g(phi) * gap / SCALE))
-
-    ours = [chance(o) for o in run(contests, RatingParams())]  # the job's settings
+    outcomes = run(contests, RatingParams())  # the job's settings
+    ours = [chance(o, RD_SHIFT) for o in outcomes]
     glicko = glicko_paper_chances(contests)
     elo = elo_chances(contests)
     lists = wrl_lists(os.path.join(DATA, "wrl_history.csv.gz"))
@@ -311,12 +469,31 @@ def main() -> None:
     weight_of: dict[int, str] = {}  # the weight of the latest contest
     in_weight: dict[tuple[int, str], int] = defaultdict(int)  # contests in this weight
     moved: dict[int, bool] = {}  # fought in another weight before this one
+    move: dict[int, str] = {}  # "up" or "down": the latest change of weight
+    skill_at_move: dict[int, float] = {}  # the skill before it
     for i, c in enumerate(contests):
         f = facts[c.contest_id]
         start = f.date_from
-        for side in (c.blue_id, c.white_id):
+        for side, before in (
+            (c.blue_id, outcomes[i].blue_before),
+            (c.white_id, outcomes[i].white_before),
+        ):
             if side in weight_of and weight_of[side] != c.weight:
                 moved[side] = True
+                for order in (MEN, WOMEN):
+                    if weight_of[side] in order and c.weight in order:
+                        up = order.index(c.weight) > order.index(weight_of[side])
+                        move[side] = "up" if up else "down"
+                        skill_at_move[side] = before.rating
+        elite = {
+            d: any(
+                move.get(s) == d
+                and skill_at_move.get(s, 0) >= 2000
+                and in_weight[(s, c.weight)] < 5
+                for s in (c.blue_id, c.white_id)
+            )
+            for d in ("up", "down")
+        }
         fresh_move = any(
             moved.get(s) and in_weight[(s, c.weight)] < 5 for s in (c.blue_id, c.white_id)
         )
@@ -327,6 +504,7 @@ def main() -> None:
             )
             rows.append(
                 {
+                    "i": i,
                     "contest_id": c.contest_id,
                     "competition": c.competition_id,
                     "start": start,
@@ -340,6 +518,8 @@ def main() -> None:
                     "level": level(f.rank_name),
                     "experience": min(seen[c.blue_id], seen[c.white_id]),
                     "moved": fresh_move,
+                    "elite_up": elite["up"],
+                    "elite_down": elite["down"],
                 }
             )
         for side in (c.blue_id, c.white_id):
@@ -470,11 +650,13 @@ def main() -> None:
         f" accuracy {ijf1['accuracy']:.4f}.",
     ]
     result["disagreements"] = {"n": len(split), "ours_right": ours_right, "p": p_value}
+    sweep(outcomes, test, slices)
+    handicap_sweep(contests, test, slices)
     report = "\n".join(lines + diffs + cal + dis + note)
     open(os.path.join(HERE, "RESULTS.md"), "w").write(report + "\n")
     json.dump(result, open(os.path.join(HERE, "results.json"), "w"), indent=1, default=str)
     # every judged contest with each model's chance of the blue side, to trace any number
-    with gzip.open(os.path.join(DATA, "predictions.csv.gz"), "wt", newline="") as f:
+    with gz_text(os.path.join(DATA, "predictions.csv.gz")) as f:
         w = csv.writer(f)
         w.writerow(
             [

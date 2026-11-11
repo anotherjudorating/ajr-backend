@@ -58,6 +58,9 @@ contests before), no WRL points, the first 5 contests after a change of weight.
 | `fetch_wrl_history.py` | downloads the WRL history from judobase (`competitor.wrl_history`, every athlete in `ajr.athlete`) | yes |
 | `data/contests.csv.gz` | the snapshot of our contests in the rating's order (226 776), with the facts the slices use | yes |
 | `data/predictions.csv.gz` | every judged contest of the calibration and the test with each model's chance, the WRL points and the slices | yes |
+| `data/tables.csv.gz` | today's listed athletes with their skill and RD (the slider's tables) | yes |
+| `data/rd_shift.json` | the methodology's slider "rating = skill − n·RD", n = 0 … 5 by 0.5: the test's metrics (all, newcomers, medal rounds), calibration and the share right against the IJF for each n, and each weight's top 10 | yes |
+| `data/handicap.json` | the sliders "handicap on a move up / down", −25% … +25% of the rating by 5%: the engine run again for each of the 121 pairs, the test's metrics for all, newcomers, medal rounds, the first 5 after a change, the elite (rating 2000+) moving up and down; far pairs marked `diverged` (the shift compounds at every change until Glicko's update breaks) | yes |
 | `data/wrl_history.csv.gz` | the IJF's weekly lists, 2025 week 12 to 2026 week 45, seniors, juniors and cadets (586 685 rows) | no: the IJF's data |
 
 ## Run it again
