@@ -10,12 +10,12 @@ RANKING = RankingParams()
 DAY = date(2026, 10, 28)
 
 
-def test_score_is_rating_minus_three_rd_on_the_day():
+def test_score_is_rating_minus_rd_on_the_day():
     state = AthleteState(rating=2000, rd=100, last_day=DAY, weight="-73")
 
     place = standing(1, state, DAY, PARAMS, RANKING)
 
-    assert place.score == pytest.approx(2000 - 3 * 100)
+    assert place.score == pytest.approx(2000 - 1 * 100)
     assert place.days_inactive == 0
 
 
@@ -25,7 +25,7 @@ def test_rd_grows_while_not_fighting():
     place = standing(1, state, DAY, PARAMS, RANKING)
 
     assert place.rd > 100
-    assert place.score < 2000 - 3 * 100
+    assert place.score < 2000 - 1 * 100
 
 
 def test_hidden_after_a_year_without_contests():

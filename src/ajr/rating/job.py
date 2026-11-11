@@ -219,7 +219,6 @@ def settings(params: RatingParams, ranking: RankingParams) -> RatingSettings:
     return RatingSettings(
         id=1,
         **asdict(params),
-        rd_factor=ranking.rd_factor,
         hide_after_days=ranking.hide_after_days,
         min_tournaments=ranking.min_tournaments,
         listing_days=ranking.listing_days,

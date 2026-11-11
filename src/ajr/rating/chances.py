@@ -176,7 +176,7 @@ def medal_chances(connection: Connection, today: date, params: RatingParams) -> 
         athletes = {a for f in fights for a in f.known}
         ratings = ratings_on(connection, athletes, max(today, starts[competition_id]), params)
         chance = {
-            (a, b): win_probability(ratings[a], ratings[b])
+            (a, b): win_probability(ratings[a], ratings[b], params.rd_factor)
             for a in athletes
             for b in athletes
             if a < b

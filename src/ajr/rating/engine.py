@@ -37,6 +37,9 @@ class RatingParams:
     initial_volatility: float = 0.06
     tau: float = 0.5
     move_handicap: float = 0.05  # share of the rating, on a change of weight category
+    # the site's rating is skill - rd_factor * RD: the tables, the places, the records and
+    # the chance of a win (benchmark/: 1 predicts best; 3 before 2026-11-11)
+    rd_factor: float = 1
     # only real fights (see the module's docstring): individual seniors' events, the 14
     # weights, no walkovers; False rates every decided contest, as before 2026-11
     real_fights_only: bool = True
@@ -175,7 +178,7 @@ def run(
         outcomes.append(
             ContestOutcome(
                 contest=contest,
-                blue_win_probability=win_probability(blue, white),
+                blue_win_probability=win_probability(blue, white, params.rd_factor),
                 blue_before=blue,
                 white_before=white,
                 blue_after=blue_after,

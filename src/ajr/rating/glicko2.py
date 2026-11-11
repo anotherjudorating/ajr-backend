@@ -24,13 +24,16 @@ def g(phi: float) -> float:
     return 1 / math.sqrt(1 + 3 * phi**2 / math.pi**2)
 
 
-def win_probability(player: Rating, opponent: Rating) -> float:
+def win_probability(player: Rating, opponent: Rating, rd_factor: float = 0.0) -> float:
     """Chance that `player` beats `opponent`, counting the uncertainty of both.
 
+    With `rd_factor`, from each side's rating less rd_factor RDs (the site's rating:
+    skill - 1 * RD predicts better than the skill alone, benchmark/README.md).
     Symmetric: win_probability(a, b) + win_probability(b, a) == 1.
     """
     phi = math.hypot(player.rd, opponent.rd) / SCALE
-    return 1 / (1 + math.exp(-g(phi) * (player.rating - opponent.rating) / SCALE))
+    gap = (player.rating - rd_factor * player.rd) - (opponent.rating - rd_factor * opponent.rd)
+    return 1 / (1 + math.exp(-g(phi) * gap / SCALE))
 
 
 def grow_rd(rd: float, days: int, growth: float, max_rd: float) -> float:
