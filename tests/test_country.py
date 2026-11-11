@@ -36,10 +36,15 @@ def test_nation_snapshot_ranks_as_teams_does():
                     from ajr.nation_snapshot s join ajr.country co on co.id = s.country_id""")
         ).all()
 
+    # the places the same; the rating within a point (the snapshot averages the table's
+    # rounded scores, api.teams the exact ones)
     for kind in ("men", "women", "mixed"):
-        teams = {(row["country"], row["place"], row["rating"])
+        teams = {row["country"]: (row["place"], row["rating"])
                  for row in call("select * from api.teams(:kind)", kind=kind)}  # fmt: skip
-        assert {(ioc, place, rating) for k, ioc, place, rating in snapshot if k == kind} == teams
+        mine = {ioc: (place, rating) for k, ioc, place, rating in snapshot if k == kind}
+        assert mine.keys() == teams.keys()
+        for ioc, (place, rating) in mine.items():
+            assert place == teams[ioc][0] and abs(rating - teams[ioc][1]) <= 1
 
 
 def test_country():

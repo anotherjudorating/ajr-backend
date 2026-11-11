@@ -15,7 +15,7 @@ Metrics, from monthly snapshots of every weight's top 10 and from all contests:
 
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from ajr.core.db import engine
@@ -37,8 +37,10 @@ BREAK = timedelta(days=365)
 # Chosen on 2026-10-28: k = 3, hidden after a year (fresh 100%, table 69.9%).
 # A penalty growing with the square of the idle time pushed leavers out a few
 # months earlier at the same table accuracy, but was dropped as one rule too many.
+# k is the rating's (RatingParams.rd_factor); since 2026-11-11 it is 1, by the chances'
+# benchmark (benchmark/README.md), the tables taking the same number
 VARIANTS = [
-    RankingParams(rd_factor=k, hide_after_days=hide)
+    (replace(CHOSEN, rd_factor=k), RankingParams(hide_after_days=hide))
     for k in (1, 2, 3, 4)
     for hide in (None, 365, 548)
 ]
@@ -63,7 +65,9 @@ def month_starts(start: date, end: date) -> list[date]:
     return months
 
 
-def measure(outcomes: list[ContestOutcome], params: RankingParams) -> RankingMetrics:
+def measure(
+    outcomes: list[ContestOutcome], rating: RatingParams, params: RankingParams
+) -> RankingMetrics:
     states: dict[int, AthleteState] = {}
     contest_days: dict[int, list[date]] = defaultdict(list)
     months = month_starts(*PERIOD)
@@ -77,7 +81,7 @@ def measure(outcomes: list[ContestOutcome], params: RankingParams) -> RankingMet
         contest = outcome.contest
         # Snapshots are taken before the contests of their day.
         while next_month < len(months) and months[next_month] <= contest.day:
-            tables = leaderboards(states, months[next_month], CHOSEN, params)
+            tables = leaderboards(states, months[next_month], rating, params)
             for table in tables.values():
                 for place in table[:TOP]:
                     places += 1
@@ -91,8 +95,8 @@ def measure(outcomes: list[ContestOutcome], params: RankingParams) -> RankingMet
             blue = states.get(contest.blue_id)
             white = states.get(contest.white_id)
             if blue and white:
-                blue_place = standing(contest.blue_id, blue, contest.day, CHOSEN, params)
-                white_place = standing(contest.white_id, white, contest.day, CHOSEN, params)
+                blue_place = standing(contest.blue_id, blue, contest.day, rating, params)
+                white_place = standing(contest.white_id, white, contest.day, rating, params)
                 if blue_place and white_place and blue_place.score != white_place.score:
                     table_contests += 1
                     table_right += (blue_place.score > white_place.score) == contest.blue_won
@@ -115,11 +119,11 @@ def measure(outcomes: list[ContestOutcome], params: RankingParams) -> RankingMet
         stay_p90=statistics.quantiles(stays, n=10)[-1],
         table_accuracy=table_right / table_contests,
         table_contests=table_contests,
-        gain=fight_gain(params),
+        gain=fight_gain(rating),
     )
 
 
-def fight_gain(params: RankingParams, rating: float = 1850, rd: float = 70) -> float:
+def fight_gain(params: RatingParams, rating: float = 1850, rd: float = 70) -> float:
     """Score after half a year: 4 contests against equals with even results, minus resting."""
     rested_rd = grow_rd(rd, 180, CHOSEN.rd_growth, CHOSEN.max_rd)
     player = Rating(rating, rd, CHOSEN.initial_volatility)
@@ -135,12 +139,12 @@ def main() -> None:
         outcomes = run(load_contests(connection), CHOSEN)
 
     print("   k   hide   fresh  stay med/p90   table  gain")
-    for params in VARIANTS:
-        m = measure(outcomes, params)
+    for rating, params in VARIANTS:
+        m = measure(outcomes, rating, params)
         hide = f"{params.hide_after_days}d" if params.hide_after_days else "never"
         stay = f"{m.stay_median:.0f} / {m.stay_p90:.0f} mo"
         print(
-            f"{params.rd_factor:>4} {hide:>6}  {m.fresh:6.1%} "
+            f"{rating.rd_factor:>4} {hide:>6}  {m.fresh:6.1%} "
             f"{stay:>13} {m.table_accuracy:7.2%} {m.gain:5.0f}"
         )
 

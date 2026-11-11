@@ -182,7 +182,7 @@ def test_settings_are_saved():
     with Session(engine) as session:
         settings = session.get(RatingSettings, 1)
     assert settings.rd_growth == RatingParams().rd_growth
-    assert settings.rd_factor == 3
+    assert settings.rd_factor == 1
 
 
 def test_running_again_replaces_the_rows():

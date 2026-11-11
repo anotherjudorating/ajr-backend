@@ -71,7 +71,7 @@ def test_leaderboard():
     assert {row["athlete_id"] for row in rows} == {1, 2, 3}  # 4 and 5 are hidden
     leader = rows[0]
     assert (leader["place"], leader["family_name"], leader["country"]) == (1, "NAME1", "JPN")
-    assert leader["score"] == pytest.approx(leader["rating"] - 3 * leader["rd"], abs=2)
+    assert leader["score"] == pytest.approx(leader["rating"] - leader["rd"], abs=2)  # rd_factor 1
     assert leader["last_contest"] == TODAY - timedelta(days=30)
     # 90 days ago nobody of them had fought yet: no changes to show.
     assert leader["places_up_90d"] is None

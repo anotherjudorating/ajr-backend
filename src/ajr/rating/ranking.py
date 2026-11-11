@@ -36,7 +36,6 @@ WEIGHTS = [
 
 @dataclass(frozen=True)
 class RankingParams:
-    rd_factor: float = 3  # picked with `python -m ajr.rating.tune_ranking`
     hide_after_days: int | None = 365
     min_tournaments: int = 3  # in a weight within listing_days, to stand in its table
     listing_days: int = 365
@@ -120,7 +119,7 @@ def standing(
     rd = grow_rd(state.rd, days_inactive, rating_params.rd_growth, rating_params.max_rd)
     return Standing(
         athlete_id=athlete_id,
-        score=state.rating - ranking_params.rd_factor * rd,
+        score=state.rating - rating_params.rd_factor * rd,
         rating=state.rating,
         rd=rd,
         days_inactive=days_inactive,
