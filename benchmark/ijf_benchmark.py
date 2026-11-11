@@ -13,7 +13,8 @@ Models (each gives the blue side's chance before the contest):
   through the volatility (a period without contests: phi = sqrt(phi^2 + sigma^2)), the
   chance of a contest from both sides' uncertainty (Glicko, 1999); tau 0.5, 1500 /
   350 / 0.06 at the start;
-- ours: the engine as on the site.
+- ours: the engine as on the site, the chance from the rating (skill - 1 * RD) of each
+  side and both RDs.
 Elo and ours update after every contest (live), as they are used; the paper's
 Glicko-2 within a month and the WRL within a week do not.
 
@@ -71,17 +72,11 @@ CALIBRATION_FROM = date(2025, 3, 17)  # the WRL archive's first list (2025 week 
 TEST_FROM = date(2025, 7, 1)
 TEST_TO = date(2026, 11, 8)
 ELO_K = 32
-# ours with the chance from skill - k * RD of both sides (the tables' rating is k = 3)
-SHIFTS = (1, 2, 3)
-MODELS = ["coin", "ijf", "elo", "glicko2", "ours", *(f"ours_k{k}" for k in SHIFTS)]
-NAMES = {
-    "coin": "Coin",
-    "ijf": "IJF WRL",
-    "elo": "Elo",
-    "glicko2": "Glicko-2",
-    "ours": "Ours",
-    **{f"ours_k{k}": f"Ours, skill − {k}·RD" for k in SHIFTS},
-}
+# our chance is from the rating, skill - 1 * RD of each side (k = 0, 1, 2, 3 measured on
+# 2026-11-11: 1 the best, 3 overconfident)
+RD_SHIFT = 1
+MODELS = ["coin", "ijf", "elo", "glicko2", "ours"]
+NAMES = {"coin": "Coin", "ijf": "IJF WRL", "elo": "Elo", "glicko2": "Glicko-2", "ours": "Ours"}
 MAJORS = {"Olympic Games", "Masters"}
 MEDAL_STAGES = {"F", "1/2", "BR"}
 BOOT = 1000
@@ -299,16 +294,14 @@ def main() -> None:
     contests, facts = read_snapshot(snapshot)
     print(f"contests {len(contests)}", flush=True)
 
-    outcomes = run(contests, RatingParams())  # the job's settings
-    ours = [o.blue_win_probability for o in outcomes]
-
-    def shifted(o, k: float) -> float:
+    def chance(o) -> float:
+        """The blue side's chance from the ratings (skill - RD_SHIFT * RD) and both RDs."""
         a, b = o.blue_before, o.white_before
         phi = math.hypot(a.rd, b.rd) / SCALE
-        gap = (a.rating - k * a.rd) - (b.rating - k * b.rd)
+        gap = (a.rating - RD_SHIFT * a.rd) - (b.rating - RD_SHIFT * b.rd)
         return 1 / (1 + math.exp(-g(phi) * gap / SCALE))
 
-    variants = {k: [shifted(o, k) for o in outcomes] for k in SHIFTS}
+    ours = [chance(o) for o in run(contests, RatingParams())]  # the job's settings
     glicko = glicko_paper_chances(contests)
     elo = elo_chances(contests)
     lists = wrl_lists(os.path.join(DATA, "wrl_history.csv.gz"))
@@ -342,7 +335,6 @@ def main() -> None:
                     "elo": elo[i],
                     "glicko2": glicko[i],
                     "ours": ours[i],
-                    **{f"ours_k{k}": variants[k][i] for k in SHIFTS},
                     "pts": (pb, pw),
                     "stage": f.stage,
                     "level": level(f.rank_name),
@@ -421,7 +413,7 @@ def main() -> None:
         "Medal rounds of majors (OG, Worlds, Masters, GS)",
         "Experience: one side < 10 contests",
     ):
-        for other in ("ijf", "elo", "glicko2", *(f"ours_k{k}" for k in SHIFTS)):
+        for other in ("ijf", "elo", "glicko2"):
             d, lo, hi = bootstrap_diff(slices[name], "ours", other)
             diffs.append(
                 f"| {NAMES[other]} | {name} | {d * 1000:+.1f}"
@@ -496,7 +488,6 @@ def main() -> None:
                 "elo",
                 "glicko2",
                 "ours",
-                *(f"ours_k{k}" for k in SHIFTS),
                 "wrl_points_blue",
                 "wrl_points_white",
                 "stage",
@@ -518,7 +509,6 @@ def main() -> None:
                     round(r["elo"], 6),
                     round(r["glicko2"], 6),
                     round(r["ours"], 6),
-                    *(round(r[f"ours_k{k}"], 6) for k in SHIFTS),
                     *r["pts"],
                     r["stage"],
                     r["level"],
