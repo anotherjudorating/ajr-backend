@@ -48,8 +48,7 @@ from datetime import date
 
 from sqlalchemy import create_engine, text
 
-import ajr.rating.engine as engine_module
-from ajr.rating.engine import MEN, WOMEN, ContestRecord, RatingParams, load_contests, run
+from ajr.rating.engine import ContestRecord, RatingParams, load_contests, run
 from ajr.rating.glicko2 import SCALE, Rating, g, update
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -383,62 +382,6 @@ def sweep(outcomes, test, slices) -> None:
     )
 
 
-# The handicap on a change of weight, as two sliders: the share of the rating added on a
-# move up and on a move down (now -0.05 and +0.05), each from -0.25 to +0.25; the engine
-# run again for each pair, the chance from skill - 1 * RD; into data/handicap.json.
-HANDICAPS = [round(x * 0.05, 2) for x in range(-5, 6)]
-
-
-def handicap_sweep(contests, test, slices) -> None:
-    picked = {
-        "all": test,
-        "newcomers": slices["Experience: one side < 10 contests"],
-        "medal_rounds": slices["Medal rounds of majors (OG, Worlds, Masters, GS)"],
-        "after_move": slices["After a change of weight (first 5 in the new one)"],
-        "elite_up": [r for r in test if r["elite_up"]],
-        "elite_down": [r for r in test if r["elite_down"]],
-    }
-    original = engine_module.move_shift
-    grid = []
-    try:
-        for up in HANDICAPS:
-            for down in HANDICAPS:
-
-                def shift(rating, from_weight, to_weight, params, up=up, down=down):
-                    for order in (MEN, WOMEN):
-                        if from_weight in order and to_weight in order and from_weight != to_weight:
-                            higher = order.index(to_weight) > order.index(from_weight)
-                            return (up if higher else down) * rating
-                    return 0.0
-
-                engine_module.move_shift = shift
-                entry = {"up": up, "down": down}
-                try:
-                    outcomes = run(contests, RatingParams())
-                except ZeroDivisionError, OverflowError:
-                    # the shift compounds at every change: far ones run the ratings off to
-                    # where a chance is exactly 0 or 1, and Glicko's update breaks down
-                    entry["diverged"] = True
-                    grid.append(entry)
-                    print(f"handicap up {up:+.2f} down {down:+.2f}: diverged", flush=True)
-                    continue
-                for name, sub in picked.items():
-                    rows = [{"p": chance(outcomes[r["i"]], RD_SHIFT), "won": r["won"]} for r in sub]
-                    entry[name] = {
-                        "n": len(rows),
-                        **{k: round(v, 5) for k, v in scores(rows, "p").items()},
-                    }
-                grid.append(entry)
-                print(
-                    f"handicap up {up:+.2f} down {down:+.2f}: {entry['all']['log loss']:.4f}",
-                    flush=True,
-                )
-    finally:
-        engine_module.move_shift = original
-    with open(os.path.join(DATA, "handicap.json"), "w") as f:
-        json.dump({"up": HANDICAPS, "down": HANDICAPS, "grid": grid}, f, separators=(",", ":"))
-
-
 TABLES = text("""
     select weight, athlete_id, concat_ws(' ', family_name, given_name) as name, country,
            rating as skill, rd
@@ -469,31 +412,12 @@ def main() -> None:
     weight_of: dict[int, str] = {}  # the weight of the latest contest
     in_weight: dict[tuple[int, str], int] = defaultdict(int)  # contests in this weight
     moved: dict[int, bool] = {}  # fought in another weight before this one
-    move: dict[int, str] = {}  # "up" or "down": the latest change of weight
-    skill_at_move: dict[int, float] = {}  # the skill before it
     for i, c in enumerate(contests):
         f = facts[c.contest_id]
         start = f.date_from
-        for side, before in (
-            (c.blue_id, outcomes[i].blue_before),
-            (c.white_id, outcomes[i].white_before),
-        ):
+        for side in (c.blue_id, c.white_id):
             if side in weight_of and weight_of[side] != c.weight:
                 moved[side] = True
-                for order in (MEN, WOMEN):
-                    if weight_of[side] in order and c.weight in order:
-                        up = order.index(c.weight) > order.index(weight_of[side])
-                        move[side] = "up" if up else "down"
-                        skill_at_move[side] = before.rating
-        elite = {
-            d: any(
-                move.get(s) == d
-                and skill_at_move.get(s, 0) >= 2000
-                and in_weight[(s, c.weight)] < 5
-                for s in (c.blue_id, c.white_id)
-            )
-            for d in ("up", "down")
-        }
         fresh_move = any(
             moved.get(s) and in_weight[(s, c.weight)] < 5 for s in (c.blue_id, c.white_id)
         )
@@ -518,8 +442,6 @@ def main() -> None:
                     "level": level(f.rank_name),
                     "experience": min(seen[c.blue_id], seen[c.white_id]),
                     "moved": fresh_move,
-                    "elite_up": elite["up"],
-                    "elite_down": elite["down"],
                 }
             )
         for side in (c.blue_id, c.white_id):
@@ -651,7 +573,6 @@ def main() -> None:
     ]
     result["disagreements"] = {"n": len(split), "ours_right": ours_right, "p": p_value}
     sweep(outcomes, test, slices)
-    handicap_sweep(contests, test, slices)
     report = "\n".join(lines + diffs + cal + dis + note)
     open(os.path.join(HERE, "RESULTS.md"), "w").write(report + "\n")
     json.dump(result, open(os.path.join(HERE, "results.json"), "w"), indent=1, default=str)
