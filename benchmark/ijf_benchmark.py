@@ -148,10 +148,11 @@ def chance(o, shift: float) -> float:
 
 
 def glicko_paper_chances(contests, tau: float = 0.5) -> list[float]:
-    """Glicko-2 by the paper: a rating period a calendar month."""
+    """Glicko-2 by the paper: a rating period a calendar month, by the contest's day (a
+    tournament across the turn of a month falls in both)."""
     state: dict[int, Rating] = {}
     last: dict[int, int] = {}  # the last period an athlete was rated in
-    out: list[float] = []
+    out: list[float] = [0.0] * len(contests)
 
     def period(day: date) -> int:
         return day.year * 12 + day.month
@@ -160,25 +161,26 @@ def glicko_paper_chances(contests, tau: float = 0.5) -> list[float]:
         r = state.get(athlete)
         if r is None:
             return Rating(1500.0, 350.0, 0.06)
-        missed = p - last[athlete] - 1  # periods without contests since: RD grows
+        missed = max(0, p - last[athlete] - 1)  # periods without contests since: RD grows
         rd = min(math.sqrt(r.rd**2 + missed * (r.volatility * SCALE) ** 2), 350.0)
         return Rating(r.rating, rd, r.volatility)
 
-    i = 0
-    while i < len(contests):
-        p = period(contests[i].day)
-        j = i
-        while j < len(contests) and period(contests[j].day) == p:
-            j += 1
+    # every month's contests together, the months in order (the list is in the rating's
+    # order, by the tournaments' first days: a month's contests are not all in a row)
+    months: dict[int, list[int]] = defaultdict(list)
+    for i, c in enumerate(contests):
+        months[period(c.day)].append(i)
+    for p in sorted(months):
         pre: dict[int, Rating] = {}
         results: dict[int, list] = defaultdict(list)
-        for c in contests[i:j]:
+        for i in months[p]:
+            c = contests[i]
             for a in (c.blue_id, c.white_id):
                 if a not in pre:
                     pre[a] = at_start(a, p)
             a, b = pre[c.blue_id], pre[c.white_id]
             phi = math.hypot(a.rd, b.rd) / SCALE
-            out.append(1 / (1 + math.exp(-g(phi) * (a.rating - b.rating) / SCALE)))
+            out[i] = 1 / (1 + math.exp(-g(phi) * (a.rating - b.rating) / SCALE))
             s = 1.0 if c.blue_won else 0.0
             results[c.blue_id].append((b, s))
             results[c.white_id].append((a, 1 - s))
@@ -186,7 +188,6 @@ def glicko_paper_chances(contests, tau: float = 0.5) -> list[float]:
             new = update(pre[a], games, tau)
             state[a] = Rating(new.rating, min(new.rd, 350.0), new.volatility)
             last[a] = p
-        i = j
     return out
 
 

@@ -27,7 +27,10 @@ is overconfident.
 The WRL: a list `YYYY_N` is the one of the Monday of ISO week N, with the results up to
 the Sunday before (checked: Abu Dhabi Grand Slam, 29–31 Oct 2026, is in 2026_45). `k` is
 fitted on the calibration window; `k = 1` (chances in proportion to the points) is
-reported too.
+reported too. The points are the contest's weight only: an athlete new to a weight
+has 0 there even with points in another (3.7% of the sides in the test); the archive
+has no list for 2025 weeks 16, 24, 29, 51, 2026 weeks 1–3, 17 and 38–41 (as judobase
+gave it; the latest list before is taken), both slightly against the WRL.
 
 ## Windows
 
