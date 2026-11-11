@@ -8,9 +8,14 @@ Models (each gives the blue side's chance before the contest):
   first day (a version YYYY_N is the list of the Monday of ISO week N, with the results
   up to the Sunday before); k fitted on the calibration window;
 - Elo: 1500 at the start, K = 32, updated after every contest;
-- Glicko-2: our engine without our additions (no handicap on a change of weight);
+- Glicko-2 as in the paper (Glickman, 2013): monthly rating periods, the contests of a
+  month rated together from the ratings at its start, the uncertainty grown only
+  through the volatility (a period without contests: phi = sqrt(phi^2 + sigma^2)), the
+  chance of a contest from both sides' uncertainty (Glicko, 1999); tau 0.5, 1500 /
+  350 / 0.06 at the start;
 - ours: the engine as on the site.
-All but the WRL update after every contest (live), as they are used.
+Elo and ours update after every contest (live), as they are used; the paper's
+Glicko-2 within a month and the WRL within a week do not.
 
 Windows: the history before the WRL archive is warm-up (ratings only); the WRL's first
 months are the calibration of k; the test is from TEST_FROM to TEST_TO. Judged: real
@@ -36,13 +41,13 @@ import math
 import os
 import random
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import create_engine, text
 
 from ajr.rating.engine import ContestRecord, RatingParams, load_contests, run
-from ajr.rating.job import PARAMS
+from ajr.rating.glicko2 import SCALE, Rating, g, update
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -126,6 +131,49 @@ def elo_chances(contests) -> list[float]:
         s = 1.0 if c.blue_won else 0.0
         ratings[c.blue_id] = a + ELO_K * (s - p)
         ratings[c.white_id] = b + ELO_K * ((1 - s) - (1 - p))
+    return out
+
+
+def glicko_paper_chances(contests, tau: float = 0.5) -> list[float]:
+    """Glicko-2 by the paper: a rating period a calendar month."""
+    state: dict[int, Rating] = {}
+    last: dict[int, int] = {}  # the last period an athlete was rated in
+    out: list[float] = []
+
+    def period(day: date) -> int:
+        return day.year * 12 + day.month
+
+    def at_start(athlete: int, p: int) -> Rating:
+        r = state.get(athlete)
+        if r is None:
+            return Rating(1500.0, 350.0, 0.06)
+        missed = p - last[athlete] - 1  # periods without contests since: RD grows
+        rd = min(math.sqrt(r.rd**2 + missed * (r.volatility * SCALE) ** 2), 350.0)
+        return Rating(r.rating, rd, r.volatility)
+
+    i = 0
+    while i < len(contests):
+        p = period(contests[i].day)
+        j = i
+        while j < len(contests) and period(contests[j].day) == p:
+            j += 1
+        pre: dict[int, Rating] = {}
+        results: dict[int, list] = defaultdict(list)
+        for c in contests[i:j]:
+            for a in (c.blue_id, c.white_id):
+                if a not in pre:
+                    pre[a] = at_start(a, p)
+            a, b = pre[c.blue_id], pre[c.white_id]
+            phi = math.hypot(a.rd, b.rd) / SCALE
+            out.append(1 / (1 + math.exp(-g(phi) * (a.rating - b.rating) / SCALE)))
+            s = 1.0 if c.blue_won else 0.0
+            results[c.blue_id].append((b, s))
+            results[c.white_id].append((a, 1 - s))
+        for a, games in results.items():
+            new = update(pre[a], games, tau)
+            state[a] = Rating(new.rating, min(new.rd, 350.0), new.volatility)
+            last[a] = p
+        i = j
     return out
 
 
@@ -242,9 +290,8 @@ def main() -> None:
     contests, facts = read_snapshot(snapshot)
     print(f"contests {len(contests)}", flush=True)
 
-    ours = [o.blue_win_probability for o in run(contests, PARAMS)]
-    plain: RatingParams = replace(PARAMS, move_handicap=0.0)
-    glicko = [o.blue_win_probability for o in run(contests, plain)]
+    ours = [o.blue_win_probability for o in run(contests, RatingParams())]  # the job's settings
+    glicko = glicko_paper_chances(contests)
     elo = elo_chances(contests)
     lists = wrl_lists(os.path.join(DATA, "wrl_history.csv.gz"))
 
