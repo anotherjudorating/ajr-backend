@@ -232,3 +232,6 @@ __marimo__/
 
 # the update job's working copy (.github/working-copy.sh)
 *.dump
+
+# benchmark: the IJF's ranking lists (fetch_wrl_history.py) stay out of a public repo
+benchmark/data/wrl_*
