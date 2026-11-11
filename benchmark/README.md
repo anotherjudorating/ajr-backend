@@ -60,7 +60,7 @@ contests before), no WRL points, the first 5 contests after a change of weight.
 | `data/predictions.csv.gz` | every judged contest of the calibration and the test with each model's chance, the WRL points and the slices | yes |
 | `data/tables.csv.gz` | today's listed athletes with their skill and RD (the slider's tables) | yes |
 | `data/rd_shift.json` | the methodology's slider "rating = skill − n·RD", n = 0 … 5 by 0.5: the test's metrics (all, newcomers, medal rounds), calibration and the share right against the IJF for each n, and each weight's top 10 | yes |
-| `data/wrl_history.csv.gz` | the IJF's weekly lists, 2025 week 12 to 2026 week 45, seniors, juniors and cadets (586 685 rows) | no: the IJF's data |
+| `data/wrl_history.csv.gz` | the IJF's weekly lists as judobase gave them on 2026-11-11, 2025 week 12 to 2026 week 45, seniors, juniors and cadets (586 685 rows): kept, as judobase keeps only the last year and a half and may change them | yes |
 
 ## Run it again
 
@@ -72,4 +72,5 @@ DATABASE_URL=postgresql+psycopg://… uv run python ijf_benchmark.py --snapshot 
 ```
 
 judobase keeps about the last year and a half of the lists: a later fetch starts later,
-so a rerun on a new snapshot moves the windows.
+so the archive here is the one the results were computed from; fetch again only to
+extend it.
