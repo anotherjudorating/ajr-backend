@@ -88,7 +88,14 @@ def test_rounds_of_the_bracket():
     assert list(first_round(35)) == list(range(1, 17))
     assert list(first_round(11)) == [1, 2, 3, 4]
     assert [round_of(n, 35) for n in (1, 16, 17, 25, 29, 31, 33, 35)] == [
-        "1/16", "1/16", "1/8", "1/4", "REP", "1/2", "BR", "F"
+        "1/16",
+        "1/16",
+        "1/8",
+        "1/4",
+        "REP",
+        "1/2",
+        "BR",
+        "F",
     ]
 
 
@@ -148,6 +155,7 @@ def test_a_contest_to_come_with_the_athletes_ratings_on_the_day():
         ).one()  # fmt: skip
 
     day = TODAY + timedelta(days=3)
+
     def state(weight: str):
         with engine.begin() as connection:  # ajr's own function, not the site's
             sql = "select * from ajr.state_on(1, :day, :weight)"
