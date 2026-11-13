@@ -155,6 +155,8 @@ class FakeJudobase:
         self.contest_requests: list[int] = []
         self.event_requests: list[int] = []  # the requests with the contests' events
         self.profile_requests: list[int] = []
+        # (competition, judobase's weight id) -> the draw's contests
+        self.draws_of: dict[tuple[int, int], list[dict]] = {}
 
     async def __aenter__(self) -> FakeJudobase:
         return self
@@ -175,6 +177,9 @@ class FakeJudobase:
         if competition_id in self.broken_competitions:
             raise ConnectionError("500")
         return self.contests_of.get(competition_id, [])
+
+    async def draw(self, competition_id: int, weight_id: int) -> list[dict]:
+        return self.draws_of.get((competition_id, weight_id), [])
 
     async def world_ranking(self) -> list[judobase.RankingEntry]:
         if self.ranking_broken:

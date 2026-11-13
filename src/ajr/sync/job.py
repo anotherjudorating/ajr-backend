@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import judobase
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, SQLModel
 
@@ -84,6 +84,9 @@ async def run_sync(full: bool = False) -> list[Competition]:
             )
 
         await save_world_ranking(client, known_athletes, aliases)
+        soon = [c for c in competitions if is_soon_or_now(c, today)]
+        await asyncio.gather(*(save_draw(client, c, known_athletes, aliases) for c in soon))
+        drop_old_draws(today)
 
     if unannounced:
         logger.warning(
@@ -365,6 +368,110 @@ def remove_missing_contests(session: Session, competition_id: int, contest_ids: 
 
 
 # --- world ranking list -------------------------------------------------------
+
+
+def is_soon_or_now(competition: Competition, today: date) -> bool:
+    starts = competition.date_from
+    return (
+        starts is not None
+        and starts - DRAW_LOOKAHEAD <= today <= (competition.date_to or starts) + LIVE_GRACE
+    )
+
+
+# judobase's ids of the senior weights (competition.categories): men 1-7, women 8-14
+WEIGHT_IDS = range(1, 15)
+SAVE_DRAW = text("""
+    insert into ajr.draw
+        (competition_id, weight, fight_no, contest_id, blue_id, white_id, winner_id)
+    values (:competition_id, :weight, :fight_no, :contest_id, :blue_id, :white_id, :winner_id)
+""")
+
+
+async def save_draw(
+    client: JudobaseClient,
+    competition: Competition,
+    known_athletes: set[int],
+    aliases: dict[int, int],
+) -> None:
+    """A tournament's draws, every contest of every weight's bracket by its number (the
+    later ones empty until their athletes are known; a bye: one athlete, already the
+    winner), replaced whole: the medal chances play the real bracket from them. An
+    athlete we have never seen is saved from the names and nation in the draw."""
+    new: dict[int, Athlete] = {}
+
+    def athlete(c: dict, side: str) -> int | None:
+        raw = c.get(f"id_person_{side}")
+        if not raw or str(raw) == "0":
+            return None
+        athlete_id = aliases.get(int(raw), int(raw))
+        if athlete_id not in known_athletes and athlete_id not in new:
+            country = c.get(f"id_country_{side}")
+            new[athlete_id] = Athlete(
+                id=athlete_id,
+                family_name=parse.text(c.get(f"family_name_{side}")),
+                given_name=parse.text(c.get(f"given_name_{side}")),
+                gender=parse.gender_from_contest_code(c.get("contest_code_long")),
+                country_id=int(country) if country else None,
+            )
+        return athlete_id
+
+    try:
+        weights = await asyncio.gather(*(client.draw(competition.id, w) for w in WEIGHT_IDS))
+    except Exception as error:
+        logger.error("Competition %s: could not fetch the draws: %r", competition.id, error)
+        return
+    rows = []
+    for contests in weights:
+        for c in contests:
+            if not c.get("fight_no") or not c.get("weight"):
+                continue
+            rows.append(
+                {
+                    "competition_id": competition.id,
+                    "weight": c["weight"],
+                    "fight_no": int(c["fight_no"]),
+                    "contest_id": int(c["id_fight"]) if c.get("id_fight") else None,
+                    "blue_id": athlete(c, "blue"),
+                    "white_id": athlete(c, "white"),
+                    "winner_id": aliases.get(int(c["id_winner"]), int(c["id_winner"]))
+                    if c.get("id_winner") and str(c["id_winner"]) != "0"
+                    else None,
+                }
+            )
+    if not rows:
+        return
+    with Session(engine) as session:
+        if new:
+            upsert(session, list(new.values()))
+            known_athletes.update(new)
+        session.execute(
+            text("delete from ajr.draw where competition_id = :id"), {"id": competition.id}
+        )
+        session.execute(SAVE_DRAW, rows)
+        session.commit()
+    logger.info(
+        "Competition %s: draws of %d contests, %d new athletes", competition.id, len(rows), len(new)
+    )
+
+
+# The draws of the tournaments over (past their grace): their contests have it all, and
+# the site builds a finished bracket from those.
+DROP_OLD_DRAWS = text("""
+    delete from ajr.draw d
+    using ajr.competition c
+    where c.id = d.competition_id
+      and coalesce(c.date_to, c.date_from) + :grace < :today
+""")
+
+
+def drop_old_draws(today: date) -> None:
+    with Session(engine) as session:
+        dropped = session.execute(
+            DROP_OLD_DRAWS, {"grace": LIVE_GRACE.days, "today": today}
+        ).rowcount
+        session.commit()
+    if dropped:
+        logger.info("Draws of the tournaments over: %d contests dropped", dropped)
 
 
 async def save_world_ranking(

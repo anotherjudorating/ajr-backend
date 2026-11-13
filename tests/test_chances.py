@@ -4,11 +4,21 @@ import random
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session
 
 from ajr.core.db import engine
 from ajr.core.models import Athlete, Competition, Contest
-from ajr.rating.chances import Fight, feeders, is_bracket, simulate
+from ajr.rating.chances import (
+    Fight,
+    complete,
+    feeders,
+    first_round,
+    is_bracket,
+    round_of,
+    simulate,
+)
+from ajr.rating.glicko2 import grow_rd
 from ajr.rating.snapshot import refresh_chances
 from tests.test_api import add_data, call
 
@@ -49,14 +59,15 @@ def eight(winners: dict[int, int] | None = None) -> list[Fight]:
     return quarters + [Fight(n, (), winners.get(n)) for n in range(5, 12)]
 
 
-def chances_of(fights: list[Fight]) -> dict[int, tuple[float, float]]:
-    athletes = range(1, 9)
+def chances_of(fights: list[Fight], byes=None, n: int = 9):
+    athletes = range(1, n)
     chance = {(a, b): 0.8 for a in athletes for b in athletes if a < b}  # the lower id wins
-    return simulate(fights, chance, 2000, random.Random(1))
+    odds = simulate(fights, chance, 2000, random.Random(1), byes)
+    return {a: (odds.gold[a] / 2000, odds.medal[a] / 2000) for a in athletes}, odds
 
 
 def test_simulate_hands_out_one_gold_and_four_medals():
-    result = chances_of(eight())
+    result, _ = chances_of(eight())
 
     assert sum(gold for gold, _ in result.values()) == pytest.approx(1)
     assert sum(medal for _, medal in result.values()) == pytest.approx(4)
@@ -66,11 +77,32 @@ def test_simulate_hands_out_one_gold_and_four_medals():
 
 def test_simulate_keeps_the_decided_contests():
     # 2 beat 1 in their quarter-final, then won the semi-final and the final
-    result = chances_of(eight({1: 2, 7: 2, 11: 2}))
+    result, _ = chances_of(eight({1: 2, 7: 2, 11: 2}))
 
     assert result[2] == (1.0, 1.0)
     assert result[1][0] == 0  # 1 can still win bronze through the repechage
     assert 0 < result[1][1] < 1
+
+
+def test_rounds_of_the_bracket():
+    assert list(first_round(35)) == list(range(1, 17))
+    assert list(first_round(11)) == [1, 2, 3, 4]
+    assert [round_of(n, 35) for n in (1, 16, 17, 25, 29, 31, 33, 35)] == [
+        "1/16",
+        "1/16",
+        "1/8",
+        "1/4",
+        "REP",
+        "1/2",
+        "BR",
+        "F",
+    ]
+
+
+def test_a_bye_is_read_from_the_next_round():
+    # 16 places: athlete 9 is in second-round contest 9 with nobody before them
+    fights, byes = complete([Fight(2, (1, 2), 1), Fight(9, (9, 1), None)], 19)
+    assert byes == {1: 9}
 
 
 @pytest.mark.usefixtures("clean_db")
@@ -103,3 +135,39 @@ def test_competition_chances():
     assert rows[0]["medal"] >= rows[-1]["medal"]  # the likeliest first
     assert rows[0]["country"] == "JPN"
     assert call("select * from api.competition_chances(70)") == []  # too far ahead
+
+
+@pytest.mark.usefixtures("clean_db")
+def test_a_contest_to_come_with_the_athletes_ratings_on_the_day():
+    add_data()  # athlete 1 beat 2 and 3 at -73 thirty days ago
+    with Session(engine) as session:
+        session.add(Competition(id=60, name="Coming Slam", rank_name="Grand Slam",
+                                date_from=TODAY + timedelta(days=3)))  # fmt: skip
+        session.flush()
+        session.execute(
+            text("insert into ajr.draw (competition_id, weight, fight_no, contest_id, blue_id,"
+                 " white_id) values (60, '-81', 1, 6001, 1, 2)")
+        )  # fmt: skip
+        session.commit()
+        latest = session.execute(
+            text("select rating_after, rd_after from ajr.rating_change"
+                 " where athlete_id = 1 and next_fought_on = date '9999-12-31'")
+        ).one()  # fmt: skip
+
+    day = TODAY + timedelta(days=3)
+
+    def state(weight: str):
+        with engine.begin() as connection:  # ajr's own function, not the site's
+            sql = "select * from ajr.state_on(1, :day, :weight)"
+            return connection.execute(text(sql), {"day": day, "weight": weight}).mappings().one()
+
+    same = state("-73")
+    assert same["skill"] == pytest.approx(latest.rating_after)
+    assert same["rd"] == pytest.approx(grow_rd(latest.rd_after, 33, 5, 350))  # 30 + 3 days
+    up = state("-81")
+    assert up["skill"] == pytest.approx(latest.rating_after * 0.95)  # a move up: 5% off
+
+    (contest,) = call("select * from api.upcoming_contest(6001)")
+    assert (contest["blue_id"], contest["white_id"], contest["weight"]) == (1, 2, "-81")
+    assert contest["blue_skill"] == pytest.approx(up["skill"])
+    assert call("select * from api.upcoming_contest(101)") == []  # fought: the contest page

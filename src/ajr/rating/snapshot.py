@@ -516,19 +516,34 @@ SETTINGS = text("""
 
 
 def refresh_chances(session: Session, today: date | None = None) -> None:
-    """Replace the medal chances: a draw can appear and results come in at any run."""
+    """Replace the medal chances and the bracket's: a draw can appear and results come in
+    at any run."""
     settings = session.execute(SETTINGS).mappings().first()
     params = RatingParams(**settings) if settings else RatingParams()
-    rows = medal_chances(session.connection(), today or date.today(), params)
+    rows, slots = medal_chances(session.connection(), today or date.today(), params)
     session.execute(text("delete from ajr.medal_chance"))
+    session.execute(text("delete from ajr.slot_chance"))
     if rows:
         session.execute(
-            text("""insert into ajr.medal_chance (competition_id, weight, athlete_id, gold, medal)
-                    values (:competition_id, :weight, :athlete_id, :gold, :medal)"""),
+            text("""insert into ajr.medal_chance
+                        (competition_id, weight, athlete_id, gold, medal, quarter, semi, final,
+                         rating)
+                    values (:competition_id, :weight, :athlete_id, :gold, :medal, :quarter,
+                            :semi, :final, :rating)"""),
             rows,
         )
         session.execute(MEDAL_CHANCE_FACTS)
-    logger.info("Medal chances: %d rows", len(rows))
+    if slots:
+        session.execute(
+            text("""insert into ajr.slot_chance
+                        (competition_id, weight, fight_no, athlete_id, round, here, wins,
+                         contest_id)
+                    values (:competition_id, :weight, :fight_no, :athlete_id, :round, :here,
+                            :wins, :contest_id)"""),
+            slots,
+        )
+        session.execute(SLOT_CHANCE_FACTS)
+    logger.info("Medal chances: %d rows, the brackets' %d", len(rows), len(slots))
 
 
 # The names and nation the chances table shows, written into the row
@@ -539,4 +554,11 @@ MEDAL_CHANCE_FACTS = text("""
       from ajr.athlete a
       left join ajr.country co on co.id = a.country_id
      where a.id = mc.athlete_id
+""")
+SLOT_CHANCE_FACTS = text("""
+    update ajr.slot_chance sc
+       set family_name = a.family_name, given_name = a.given_name, country = co.ioc
+      from ajr.athlete a
+      left join ajr.country co on co.id = a.country_id
+     where a.id = sc.athlete_id
 """)

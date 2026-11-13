@@ -66,6 +66,21 @@ class JudobaseClient:
             )
 
     @retry_on_network_errors
+    async def draw(self, competition_id: int, weight_id: int) -> list[dict]:
+        """A weight's whole draw, its contests not fought yet too (empty, or one side
+        known), as judobase's contest sheets show it: published the day before."""
+        async with self.limit:
+            data = await self.api._get_json_dict(
+                {
+                    "params[action]": "competition.contests",
+                    "params[id_competition]": competition_id,
+                    "params[id_weight]": weight_id,
+                    "params[empty]": 1,
+                }
+            )
+        return data.get("contests") or []
+
+    @retry_on_network_errors
     async def judoka(self, judoka_id: int) -> Judoka:
         async with self.limit:
             return await self.api.get_judoka_info(judoka_id)
