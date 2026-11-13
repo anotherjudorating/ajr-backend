@@ -1,4 +1,5 @@
-"""Medal chances: the bracket (ajr/rating/chances.py) and api.competition_chances."""
+"""Medal chances: the bracket (ajr/rating/chances.py), api.competition_chances and
+api.athlete_chances."""
 
 import random
 from datetime import date, timedelta
@@ -171,3 +172,33 @@ def test_a_contest_to_come_with_the_athletes_ratings_on_the_day():
     assert (contest["blue_id"], contest["white_id"], contest["weight"]) == (1, 2, "-81")
     assert contest["blue_skill"] == pytest.approx(up["skill"])
     assert call("select * from api.upcoming_contest(101)") == []  # fought: the contest page
+
+
+@pytest.mark.usefixtures("clean_db")
+def test_an_athletes_tournaments_still_open():
+    add_data()  # athletes 1-5
+    with Session(engine) as session:
+        for i, name in enumerate(["Ahead", "Out", "Gold", "Finalist", "In"]):
+            session.add(Competition(id=80 + i, name=name, date_from=TODAY + timedelta(days=i)))
+        session.flush()
+        chances = {80: (0, 0), 81: (0, 0), 82: (1, 1), 83: (0.5, 1), 84: (0.1, 0.4)}
+        for competition_id, (gold, medal) in chances.items():
+            session.execute(
+                text("insert into ajr.medal_chance (competition_id, weight, athlete_id, gold,"
+                     " medal) values (:c, '-73', 1, :gold, :medal)"),
+                {"c": competition_id, "gold": gold, "medal": medal},
+            )  # fmt: skip
+        # fought in all but the first (Ahead: a bye only); out in Out
+        session.add(Contest(id=8001, competition_id=80, weight="-73", fight_no=1, blue_id=1,
+                            winner_id=1))  # fmt: skip
+        for competition_id in (81, 82, 83, 84):
+            session.add(Contest(id=8000 + competition_id, competition_id=competition_id,
+                                weight="-73", fight_no=1, blue_id=1, white_id=2,
+                                winner_id=2 if competition_id == 81 else 1))  # fmt: skip
+        session.commit()
+
+    rows = call("select * from api.athlete_chances(1)")
+
+    # Out (no chance left) and Gold (the medal and its colour decided) are gone
+    assert [row["competition"] for row in rows] == ["Ahead", "Finalist", "In"]
+    assert rows[1]["gold"] == 0.5
