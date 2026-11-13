@@ -86,6 +86,7 @@ async def run_sync(full: bool = False) -> list[Competition]:
         await save_world_ranking(client, known_athletes, aliases)
         soon = [c for c in competitions if is_soon_or_now(c, today)]
         await asyncio.gather(*(save_draw(client, c, known_athletes, aliases) for c in soon))
+        drop_old_draws(today)
 
     if unannounced:
         logger.warning(
@@ -451,6 +452,26 @@ async def save_draw(
     logger.info(
         "Competition %s: draws of %d contests, %d new athletes", competition.id, len(rows), len(new)
     )
+
+
+# The draws of the tournaments over (past their grace): their contests have it all, and
+# the site builds a finished bracket from those.
+DROP_OLD_DRAWS = text("""
+    delete from ajr.draw d
+    using ajr.competition c
+    where c.id = d.competition_id
+      and coalesce(c.date_to, c.date_from) + :grace < :today
+""")
+
+
+def drop_old_draws(today: date) -> None:
+    with Session(engine) as session:
+        dropped = session.execute(
+            DROP_OLD_DRAWS, {"grace": LIVE_GRACE.days, "today": today}
+        ).rowcount
+        session.commit()
+    if dropped:
+        logger.info("Draws of the tournaments over: %d contests dropped", dropped)
 
 
 async def save_world_ranking(

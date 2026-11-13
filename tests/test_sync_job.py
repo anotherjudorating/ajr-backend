@@ -560,3 +560,25 @@ def test_the_draw_of_a_tournament_coming_is_saved(judobase):
         ).all()  # fmt: skip
     assert rows == [(1, 901, 100, None, 100), (2, 902, 200, 999, None), (3, 903, None, None, None)]
     assert stored(Athlete)[999].family_name == "NEWMAN"  # saved from the draw
+
+
+def test_the_draw_of_a_tournament_over_is_dropped(judobase):
+    add_past_competition(judobase)
+    judobase.competitions_list.append(competition(2, SOON))
+    judobase.draws_of[(2, 3)] = [
+        {"id_fight": "902", "fight_no": "1", "weight": "-73", "id_person_blue": "100",
+         "id_person_white": "200", "id_winner": None},
+    ]  # fmt: skip
+    sync()
+    with Session(engine) as session:  # the past one's draw, as if saved while it was on
+        session.execute(
+            text("insert into ajr.draw (competition_id, weight, fight_no, contest_id)"
+                 " values (1, '-73', 1, 901)")
+        )  # fmt: skip
+        session.commit()
+
+    sync()
+
+    with Session(engine) as session:
+        kept = session.execute(text("select distinct competition_id from ajr.draw")).scalars().all()
+    assert kept == [2]  # the one to come stays
