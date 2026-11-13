@@ -1,6 +1,7 @@
 """Records that need every week's tables: who was #1 of a weight and of pound for
 pound and for how long (in total, and the longest run of weeks in a row), who stood
-in the top 10, the nations' team ratings and their deepest teams. Like "weeks at
+in the top 8 (the seeds of a World Championships or an Olympics), the nations' team
+ratings and their deepest teams (their athletes in the top 10). Like "weeks at
 No. 1" in tennis, the tables are looked at every Sunday; the ratings are built from
 the first contest on, the records counted from RATINGS_SINCE, when they had settled.
 
@@ -19,7 +20,8 @@ from ajr.rating.ranking import WEIGHTS, AthleteState, RankingParams, Standing, l
 from ajr.records.queries import RATINGS_SINCE
 
 MIN_TABLE = 20
-TOP_10 = 10
+TOP_8 = 8  # the weeks in the top: the seeds
+TOP_10 = 10  # the deepest teams, and the top-10 places other records read
 WEEK = timedelta(days=7)
 SINCE = date.fromisoformat(RATINGS_SINCE)
 GENDERS = {"male": WEIGHTS[:7], "female": WEIGHTS[7:]}
@@ -40,7 +42,7 @@ STATES_QUERY = text("""
 
 
 class Runs:
-    """Weeks in a row (at #1, in the top 10): each athlete's current run and best one."""
+    """Weeks in a row (at #1, in the top 8): each athlete's current run and best one."""
 
     def __init__(self) -> None:
         self.current: dict[int, tuple[int, date, date, Counter[str]]] = {}
@@ -91,10 +93,10 @@ def weekly_records(
     # a nation's records for men and women together (None) and for each gender
     scopes = {None: WEIGHTS, **GENDERS}
     team_best: dict[str | None, dict[int, tuple[float, date]]] = {g: {} for g in scopes}
-    runs_at_1, runs_p4p, runs_top_10 = Runs(), Runs(), Runs()
-    weeks_top_10: Counter[int] = Counter()
-    weights_top_10: dict[int, Counter[str]] = defaultdict(Counter)
-    last_top_10: dict[int, date] = {}
+    runs_at_1, runs_p4p, runs_top_8 = Runs(), Runs(), Runs()
+    weeks_top_8: Counter[int] = Counter()
+    weights_top_8: dict[int, Counter[str]] = defaultdict(Counter)
+    last_top_8: dict[int, date] = {}
     # scope -> nation -> athletes, weights, sunday
     deepest: dict[str | None, dict[int, tuple[int, int, date]]] = {g: {} for g in scopes}
 
@@ -126,6 +128,7 @@ def weekly_records(
 
         at_1: dict[int, str] = {}
         top_10: dict[int, str] = {}  # an athlete in two weights' top 10 counts once
+        top_8: dict[int, str] = {}  # as the top 10
         for weight, table in tables.items():
             athlete_id = table[0].athlete_id
             weeks_at_1[athlete_id] += 1
@@ -135,14 +138,16 @@ def weekly_records(
             at_1.setdefault(athlete_id, weight)
             for place, standing in enumerate(table[:TOP_10], start=1):
                 top_10.setdefault(standing.athlete_id, weight)
+                if place <= TOP_8:
+                    top_8.setdefault(standing.athlete_id, weight)
                 if places is not None:
                     places.append((sunday, weight, standing.athlete_id, place))
         runs_at_1.week(sunday, at_1)
-        runs_top_10.week(sunday, top_10)
-        for athlete_id, weight in top_10.items():
-            weeks_top_10[athlete_id] += 1
-            weights_top_10[athlete_id][weight] += 1
-            last_top_10[athlete_id] = sunday
+        runs_top_8.week(sunday, top_8)
+        for athlete_id, weight in top_8.items():
+            weeks_top_8[athlete_id] += 1
+            weights_top_8[athlete_id][weight] += 1
+            last_top_8[athlete_id] = sunday
         for scope, scope_weights in scopes.items():
             athletes_of: Counter[int] = Counter()
             weights_of: dict[int, set[str]] = defaultdict(set)
@@ -212,15 +217,15 @@ def weekly_records(
         ),
         "longest_at_1_run": ranked(runs_at_1.records(), best="high"),
         "longest_p4p_1_run": ranked(runs_p4p.records(), best="high"),
-        "most_weeks_in_top_10": ranked(
+        "most_weeks_in_top_8": ranked(
             [
-                record(athlete_id=a, value=weeks, day=last_top_10[a],
-                       weight=weights_top_10[a].most_common(1)[0][0])
-                for a, weeks in weeks_top_10.items()
+                record(athlete_id=a, value=weeks, day=last_top_8[a],
+                       weight=weights_top_8[a].most_common(1)[0][0])
+                for a, weeks in weeks_top_8.items()
             ],
             best="high",
         ),
-        "most_weeks_in_top_10_run": ranked(runs_top_10.records(), best="high"),
+        "most_weeks_in_top_8_run": ranked(runs_top_8.records(), best="high"),
         "biggest_p4p_lead": ranked(
             [record(athlete_id=a, value=gap, day=day, weight=weight)
              for a, (gap, day, weight) in p4p_lead.items()],

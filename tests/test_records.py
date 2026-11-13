@@ -107,10 +107,10 @@ def test_weekly_records(monkeypatch):
     # in a row never more than in total
     total = {row["athlete_id"]: row["value"] for row in records["longest_at_1"]}
     assert all(row["value"] <= total[row["athlete_id"]] for row in records["longest_at_1_run"])
-    top_10 = {row["athlete_id"]: row["value"] for row in records["most_weeks_in_top_10"]}
-    assert set(at_1) <= set(top_10)
-    assert all(row["value"] <= top_10[row["athlete_id"]]
-               for row in records["most_weeks_in_top_10_run"])  # fmt: skip
+    top_8 = {row["athlete_id"]: row["value"] for row in records["most_weeks_in_top_8"]}
+    assert set(at_1) <= set(top_8)
+    assert all(row["value"] <= top_8[row["athlete_id"]]
+               for row in records["most_weeks_in_top_8_run"])  # fmt: skip
     assert records["deepest_team"][0]["country"] == "JPN"
     # the upsets over a top-10 athlete, from those tables
     assert all(row["detail"]["opponent_place"] <= 10 for row in records.get("biggest_upsets", []))
