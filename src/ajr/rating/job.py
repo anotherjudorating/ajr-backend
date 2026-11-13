@@ -107,8 +107,13 @@ def run_rating(
 # the sync updates) and the medal chances (a draw published). Small tables.
 STATE_DAY = text("select max(day) from ajr.leaderboard_snapshot")
 STATE_CHANCES = text("""
-    select competition_id, weight, athlete_id, gold, medal from ajr.medal_chance
+    select competition_id, weight, athlete_id, gold, medal, quarter, semi, final
+    from ajr.medal_chance
     order by competition_id, weight, athlete_id
+""")
+STATE_SLOTS = text("""
+    select competition_id, weight, fight_no, athlete_id, here, wins from ajr.slot_chance
+    order by competition_id, weight, fight_no, athlete_id
 """)
 
 
@@ -116,6 +121,7 @@ def site_visible_state(session: Session) -> tuple:
     return (
         session.execute(STATE_DAY).scalar(),
         [tuple(row) for row in session.execute(STATE_CHANCES)],
+        [tuple(row) for row in session.execute(STATE_SLOTS)],
     )
 
 

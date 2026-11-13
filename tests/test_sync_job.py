@@ -14,6 +14,7 @@ from fake_judobase import (
     ranking_entry,
     utc,
 )
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, select
 
 from ajr.core.db import engine
@@ -536,3 +537,26 @@ def test_events_are_fetched_only_for_a_competition_with_a_zero_time_contest(judo
 
     assert sorted(judobase.contest_requests) == [1, 2, 2]
     assert judobase.event_requests == [2]
+
+
+def test_the_draw_of_a_tournament_coming_is_saved(judobase):
+    add_past_competition(judobase)  # athletes 100, 200, 300
+    judobase.competitions_list.append(competition(2, SOON))
+    judobase.draws_of[(2, 3)] = [
+        {"id_fight": "901", "fight_no": "1", "weight": "-73", "id_person_blue": "100",
+         "id_person_white": None, "id_winner": "100"},  # a bye
+        {"id_fight": "902", "fight_no": "2", "weight": "-73", "id_person_blue": "200",
+         "id_person_white": "999", "id_winner": None, "family_name_white": "NEWMAN"},  # new
+        {"id_fight": "903", "fight_no": "3", "weight": "-73", "id_person_blue": None,
+         "id_person_white": None, "id_winner": None},  # later: empty
+    ]  # fmt: skip
+
+    sync()
+
+    with Session(engine) as session:
+        rows = session.execute(
+            text("select fight_no, contest_id, blue_id, white_id, winner_id from ajr.draw"
+                 " where competition_id = 2 order by fight_no")
+        ).all()  # fmt: skip
+    assert rows == [(1, 901, 100, None, 100), (2, 902, 200, 999, None), (3, 903, None, None, None)]
+    assert stored(Athlete)[999].family_name == "NEWMAN"  # saved from the draw
