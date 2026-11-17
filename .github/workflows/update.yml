@@ -126,6 +126,8 @@ jobs:
         if: steps.publish.outputs.changed == 'true'
         env:
           REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+          CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
         run: .github/refresh-site.sh
       # The free plan allows 500 MB, and Supabase does not warn before it: an issue
       # from 450 MB on (a comment per run while over), closed under 400.
