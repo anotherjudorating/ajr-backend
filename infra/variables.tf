@@ -67,6 +67,12 @@ variable "revalidate_secret" {
 }
 
 
+variable "cloudflare_purge_token" {
+  description = "Zone › Cache Purge on anotherjudorating.com only, made in the dashboard: the update job empties the site's cached pages after a publish (Actions secret CLOUDFLARE_PURGE_TOKEN). ~/.config/ajr/terraform.env as TF_VAR_cloudflare_purge_token"
+  type        = string
+  sensitive   = true
+}
+
 variable "cloudflare_zone_id" {
   description = "Zone anotherjudorating.com: the R2 custom domain lives in it"
   type        = string

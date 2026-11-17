@@ -34,6 +34,8 @@ jobs:
       - name: Refresh the site # the release may change what the API answers
         env:
           REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+          CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
         run: .github/refresh-site.sh
       - name: Start an update run
         # it waits for this workflow to end (same concurrency group)

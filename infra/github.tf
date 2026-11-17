@@ -91,8 +91,8 @@ resource "github_repository_ruleset" "main" {
   }
 }
 
-# Actions secrets: the only two the workflows read (update.yml, release.yml,
-# backup.yml: DATABASE_URL; update.yml, release.yml: REVALIDATE_SECRET).
+# Actions secrets: the ones the workflows read (update.yml, release.yml, backup.yml:
+# DATABASE_URL; update.yml, release.yml: REVALIDATE_SECRET, CLOUDFLARE_PURGE_TOKEN).
 #
 # DATABASE_URL is built from the pooler's session-mode string in the README's
 # format (session mode 5432, postgresql+psycopg://). Secret values are never
@@ -125,6 +125,20 @@ resource "github_actions_secret" "revalidate_secret" {
   repository      = github_repository.backend.name
   secret_name     = "REVALIDATE_SECRET"
   plaintext_value = var.revalidate_secret
+}
+
+# After a publish, .github/refresh-site.sh empties Cloudflare's cache of the site's
+# pages (www): the token (Zone > Cache Purge on the zone, nothing else) and the zone.
+resource "github_actions_secret" "cloudflare_purge_token" {
+  repository      = github_repository.backend.name
+  secret_name     = "CLOUDFLARE_PURGE_TOKEN"
+  plaintext_value = var.cloudflare_purge_token
+}
+
+resource "github_actions_variable" "cloudflare_zone_id" {
+  repository    = github_repository.backend.name
+  variable_name = "CLOUDFLARE_ZONE_ID"
+  value         = var.cloudflare_zone_id
 }
 
 # Which actions may run. The workflows use actions/*, astral-sh/setup-uv and docker
