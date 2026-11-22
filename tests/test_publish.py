@@ -247,7 +247,9 @@ def test_check_ignores_the_runs_own_log(connections):
     local, remote = connections
     add_data()
     publish(local, remote)
-    local.execute("insert into ajr.job_run (type, status, started_at) values ('tables', 'success', now())")
+    local.execute(
+        "insert into ajr.job_run (type, status, started_at) values ('tables', 'success', now())"
+    )
     local.commit()
 
     assert check(local, remote) == []
