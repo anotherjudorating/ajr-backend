@@ -88,7 +88,9 @@ jobs:
             -v "$PWD:/work" postgres:17 \
             -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
             -c shared_buffers=2GB -c work_mem=64MB -c maintenance_work_mem=512MB -c jit=off
-          until docker exec db pg_isready -U postgres; do sleep 1; done
+          # over TCP: the image's first start runs a temporary server on the socket only to
+          # initialise, then restarts it; a socket check passes too early and the next psql fails
+          until docker exec db pg_isready -h 127.0.0.1 -U postgres; do sleep 1; done
           docker exec db psql -U postgres -q -c "create role anon" -c "create role authenticated"
 
       - name: The previous copy

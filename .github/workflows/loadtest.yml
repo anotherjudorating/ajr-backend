@@ -45,7 +45,8 @@ jobs:
           docker run -d --name db --network ajr -p 5432:5432 --memory=1g \
             -e POSTGRES_PASSWORD=postgres -v "$PWD/backup:/backup:ro" \
             postgres:17 -c shared_buffers=128MB -c jit=off -c extra_float_digits=0
-          until docker exec db pg_isready -U postgres; do sleep 1; done
+          # over TCP: not the image's temporary server of its first start (socket only)
+          until docker exec db pg_isready -h 127.0.0.1 -U postgres; do sleep 1; done
           docker exec db psql -U postgres -c "create role anon" -c "create role authenticated" \
             -c "alter role anon set statement_timeout = '3s'"
           # the plan of a call (Accept: application/vnd.pgrst.plan): pages read
