@@ -192,16 +192,19 @@ def test_an_old_formulas_archive_stays_90_days(monkeypatch):
 
 
 def test_publish_writes_every_athletes_places_and_a_week_later_only_whats_new(monkeypatch):
+    # the last Monday, not the module's fixed day: add_data dates its contests from the
+    # real today, and a fixed day drifts away from them as the weeks pass
+    today = date.today() - timedelta(days=date.today().weekday())
     add_data()
     run_rating()
-    monkeypatch.setattr(tables, "FIRST_DAY", TODAY - timedelta(days=21))
+    monkeypatch.setattr(tables, "FIRST_DAY", today - timedelta(days=21))
     bucket = MemoryBucket()
 
     with connection() as c:
-        tables.publish(c, bucket, today=TODAY)
+        tables.publish(c, bucket, today=today)
 
     version = json.loads(bucket.objects["manifest.json"])["version"]
-    mondays = tables.days_between(tables.FIRST_DAY, TODAY - timedelta(days=1))
+    mondays = tables.days_between(tables.FIRST_DAY, today - timedelta(days=1))
     with connection() as c:
         query = "select athlete_id, place from api.leaderboard('-73', %s)"
         listed = c.execute(query, [mondays[-1]]).fetchall()
@@ -218,7 +221,7 @@ def test_publish_writes_every_athletes_places_and_a_week_later_only_whats_new(mo
         c.execute(text("update ajr.tables_export set pending_from = null"))
     before = dict(bucket.objects)
     with connection() as c:
-        result = tables.publish(c, bucket, today=TODAY + timedelta(days=7))
+        result = tables.publish(c, bucket, today=today + timedelta(days=7))
     assert len(result.plan.days) == 1
     state = json.loads(gzip.decompress(bucket.objects[tables.places_state_key(version)]))
     athlete_id = str(listed[0][0])

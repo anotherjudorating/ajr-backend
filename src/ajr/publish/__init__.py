@@ -640,11 +640,15 @@ class Difference:
 
 def check(local: Connection, remote: Connection) -> list[Difference]:
     """The tables whose rows differ between the working copy and production. Reads
-    every published table on both: a full pass over production's tables."""
+    every published table on both: a full pass over production's tables. Not the
+    run's own log (NOT_SHOWN): the R2 tables step after the publish writes job_run and
+    tables_export on one side only, a difference every run would report (#100)."""
     differences = []
     for connection in (local, remote):
         connection.execute("set extra_float_digits = 3")
     for table in published_tables(local):
+        if table.name in NOT_SHOWN:
+            continue
         query = sql.SQL(CHECK_QUERY).format(sql.Identifier(SCHEMA, table.name))
         ours = local.execute(query).fetchone()
         theirs = remote.execute(query).fetchone()

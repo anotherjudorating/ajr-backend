@@ -242,6 +242,19 @@ def test_check_finds_the_tables_that_differ(connections):
     assert [d.table for d in check(local, remote)] == ["contest"]
 
 
+def test_check_ignores_the_runs_own_log(connections):
+    # the R2 tables step logs itself in the copy after the publish: not a difference (#100)
+    local, remote = connections
+    add_data()
+    publish(local, remote)
+    local.execute(
+        "insert into ajr.job_run (type, status, started_at) values ('tables', 'success', now())"
+    )
+    local.commit()
+
+    assert check(local, remote) == []
+
+
 def test_many_rows_are_upserted_in_parts(connections, monkeypatch):
     import ajr.publish
 
